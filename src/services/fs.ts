@@ -138,6 +138,10 @@ export interface DirectLinkInfo {
   url: string;
   downloaded: number;
   created_at: string;
+  /** 文件 URI（如 `file:///path/to/file`），前端直链创建接口需要。 */
+  file_url?: string;
+  /** 直链 URL（前端直链契约字段名是 link，非 url）。 */
+  link?: string;
 }
 
 export interface StoragePolicyInfo {
@@ -1260,6 +1264,8 @@ export class FileSystemService {
       }
     }
     await this.ctx.entities.hardDelete(garbage.map((e) => e.id));
+    // 先删直链（外键约束：direct_links.file_id → files.id）
+    await this.ctx.directLinks.deleteByFileIds(ids);
     await this.ctx.files.deleteMany(ids);
 
     // 彻底删除的文件从全文索引剔除

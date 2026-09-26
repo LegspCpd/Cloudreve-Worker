@@ -1544,6 +1544,15 @@ export class DirectLinkRepo {
       UPDATE direct_links SET deleted_at = now(), updated_at = now() WHERE id = ${id}
     `;
   }
+
+  /** 按文件 ID 批量软删直链（彻底删除文件前调用，避免外键约束阻止）。 */
+  async deleteByFileIds(fileIds: number[]): Promise<void> {
+    if (fileIds.length === 0) return;
+    await this.sql`
+      UPDATE direct_links SET deleted_at = now(), updated_at = now()
+      WHERE file_id = ANY(${fileIds}::int[]) AND deleted_at IS NULL
+    `;
+  }
 }
 
 // ---------------------------------------------------------------------------

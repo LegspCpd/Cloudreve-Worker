@@ -661,8 +661,9 @@ fileRoutes.put('/source', async (c) => {
   try {
     const service = new FileSystemService(ctx);
     const download = new DownloadService(ctx, service);
-    const links = await download.createDirectLink(URI.parse(body.uris[0]!));
-    return ok(c, { link: links[0]?.url ?? '' });
+    const uris = body.uris.map((u) => URI.parse(u));
+    const links = await download.createDirectLink(uris);
+    return ok(c, links);
   } catch (e) {
     return fail(c, e);
   }

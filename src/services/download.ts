@@ -290,24 +290,29 @@ export class DownloadService {
   // 外链（直链）
   // -------------------------------------------------------------------------
 
-  async createDirectLink(uri: URI, speed = 0): Promise<DirectLinkInfo[]> {
+  async createDirectLink(uris: URI[], speed = 0): Promise<DirectLinkInfo[]> {
     const user = this.ctx.requireUser();
-    const file = await this.fs.mustResolve(uri);
-    if (file.owner_id !== user.id && !this.ctx.isAdmin) {
-      throw new AppError(CodeOwnerOnly, 'Only owner or administrator can perform this action');
-    }
-    const link = await this.ctx.directLinks.create(file.id, file.name, speed);
-    logAudit(this.ctx, 'get_direct_link', user.id, { name: file.name });
     const base = this.ctx.settings.siteUrl.replace(/\/+$/, '');
-    const id = this.ctx.codec.encodeSourceLinkID(link.id);
-    return [
-      {
+    const results: DirectLinkInfo[] = [];
+    for (const uri of uris) {
+      const file = await this.fs.mustResolve(uri);
+      if (file.owner_id !== user.id && !this.ctx.isAdmin) {
+        throw new AppError(CodeOwnerOnly, 'Only owner or administrator can perform this action');
+      }
+      const link = await this.ctx.directLinks.create(file.id, file.name, speed);
+      logAudit(this.ctx, 'get_direct_link', user.id, { name: file.name });
+      const id = this.ctx.codec.encodeSourceLinkID(link.id);
+      results.push({
         id,
+        // 字段名对齐前端直链契约：link = 直链 URL，file_url = 文件 URI
+        link: `${base}${DIRECT_LINK_PREFIX}/${id}/${encodeURIComponent(file.name)}`,
         url: `${base}${DIRECT_LINK_PREFIX}/${id}/${encodeURIComponent(file.name)}`,
         downloaded: link.downloads,
         created_at: link.created_at.toISOString(),
-      },
-    ];
+        file_url: uri.toString(),
+      });
+    }
+    return results;
   }
 
   async deleteDirectLink(linkHashId: string): Promise<void> {
