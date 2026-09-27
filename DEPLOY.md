@@ -1,558 +1,202 @@
 # 部署手册
 
-> **只想快点用上、手边没有电脑？** 走下面的一键部署，全程手机浏览器可完成；
-> 后面的 CLI 手册留给想精细控制的人。
+全程走**一键部署**，手机浏览器就能完成，不需要本机装任何工具。
 
-## 一键部署（推荐，手机可完成）
+---
 
-1. 打开 [neon.tech](https://neon.tech) 注册（可用 GitHub / Google 登录），新建项目，复制首页的 **Connection string**（`postgresql://...` 那串）。
-2. 打开一键部署按钮：
+## 1. 准备 Neon 数据库（唯一要手动准备的）
 
-   [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/LegspCpd/Cloudreve-Worker)
+1. 打开 [neon.tech](https://neon.tech) 注册（可用 GitHub 登录）。
+2. 新建项目（区域选离你近的）。
+3. 复制 Dashboard 首页的 **Connection string**，形如：
+   ```
+   postgresql://user:pass@ep-xxx.aws.neon.tech/neondb?sslmode=require
+   ```
 
-3. 部署页里把 `DATABASE_URL` 填成第 1 步的连接串，其余保持默认，点 **Deploy**。
-   KV、R2 由 Cloudflare 自动创建；**建表和初始化在首次打开站点时自动完成**，没有任何命令要跑。
-4. 打开 Worker 地址（`https://cloudreve-worker.<你的子域>.workers.dev`），注册第一个账号 —— **第一个注册的用户自动是管理员**。
-5. 收尾：Cloudflare 面板 → 你的 Worker → 设置 → 变量，把 `SITE_URL` 改成这个 Worker 地址。
-6. 前端接入见第 5 节（同样只需要浏览器）。
+免费档够用。这串就是后面要填的 `DATABASE_URL`。
 
-### 不用按钮，在 Cloudflare 面板手动接仓库
+---
 
-Cloudflare 面板 → Workers & Pages → Create → 选你 fork 的仓库，只需要填两格：
+## 2. 一键部署
 
-| 框 | 填什么 |
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/LegspCpd/Cloudreve-Worker)
+
+| 步骤 | 操作 |
 |---|---|
-| **构建命令**（Build command） | `npm install` |
-| **部署命令**（Deploy command） | `npm run deploy` |
+| 1 | 点上面按钮，登录 Cloudflare，授权后进入部署页 |
+| 2 | 在 `DATABASE_URL` 一栏粘贴第 1 步的连接串，其余留空 |
+| 3 | 点 **Deploy**，等构建完成（约 5 分钟） |
 
-输出目录 / 根目录：留空。`npm run deploy` 会自动处理 KV namespace 和 R2
-bucket：**账号里已有同名资源就直接连过来用，没有才新建**，并把真实 ID
-回填进 wrangler.toml（`scripts/deploy.mjs` 干的），占位 ID 不用改。
+部署脚本自动完成的事，不用你管：
 
-然后在项目的 **设置 → 环境变量** 里添加 `DATABASE_URL`（值是 Neon 连接串），
-保存后重新部署 —— 部署脚本会自动把它写入 Worker 的运行时 Secret。
-`SITE_URL` 也加在这个环境变量里（部署时以 `--var` 覆盖生效）。
+- 创建 Cloudflare **KV namespace**（缓存/会话）和 **R2 bucket**（默认存储桶）
+- 把真实资源 ID 回填进 `wrangler.toml`
+- 把 `DATABASE_URL` 写成 Worker 的运行时 Secret
+- 拉取并构建**官方前端**，随 Worker 一起发布
 
----
-
-从零到能登录，一共 6 步。全程只需要 `wrangler` 和一个 Neon 账号。
-
-> 前置条件：Node 20+、一个 Cloudflare 账号、一个 Neon 账号（免费档够用）。
-> 本手册里的命令都在 `edge/` 目录下执行。
+**建表和初始化数据在首次打开站点时自动执行**（迁移脚本已打包进 Worker），不用跑任何迁移命令。
 
 ---
 
-## 0. 先想清楚两件事
+## 3. 备选：面板手动接仓库
 
-**① R2 要不要开？** R2 需要先在 Cloudflare 后台「同意 R2 服务条款」才能创建桶，
-免费额度是 10GB 存储 + 每月 100 万次 A 类操作。不想用 R2 就跳过第 2 步的建桶，
-改在部署完成后到管理后台加一个 OneDrive 存储策略。
+不用按钮时：Workers & Pages → Create → 选你 fork 的仓库，只填两格：
 
-**② 前端放哪？** 两种方案，第 5 步二选一：
+| 框 | 命令 |
+|---|---|
+| 构建命令 | `npm install` |
+| 部署命令 | `npm run deploy` |
 
-| | 方案 A（推荐） | 方案 B |
+输出目录留空。然后在项目**设置 → 环境变量**加 `DATABASE_URL`，保存后重新部署。
+
+> `npm run deploy` 对已存在的同名 KV/R2 会**直接复用**，不存在才新建。
+
+---
+
+## 4. 首次访问与管理员
+
+1. 打开 Worker 地址（`https://cloudreve-worker.<子域>.workers.dev`）。
+2. 注册第一个账号 —— **第一个注册的用户自动进入管理员组**。
+3. 用该账号登录，即可进入管理后台。
+
+**找回管理员权限**：在环境变量里同时配 `ADMIN_EMAIL` 和 `ADMIN_PASSWORD`，Worker 会保证该邮箱存在、密码一致、属于管理员组。用完建议删掉这两个变量。
+
+---
+
+## 5. 环境变量
+
+配置位置：Cloudflare → 你的 Worker → **设置 → 变量和机密**。
+
+| 变量 | 必填 | 说明 |
 |---|---|---|
-| 做法 | 官方前端构建产物随 Worker 一起发布（`[assets]`） | 官方前端单独部署到 Cloudflare Pages，Worker 反代 |
-| 优点 | 天然同源，Cookie 与 `/api` 路径都不用操心；一个域名搞定 | 前后端可以分别更新 |
-| 缺点 | 改前端要重新发布 Worker | 要额外维护 `FRONTEND_URL`，跨域/回跳更容易出错 |
+| `DATABASE_URL` | ✅ | Neon 连接串（主库，唯一可写） |
+| `SITE_URL` | 建议 | 站点对外地址，如 `https://pan.example.com`。分享短链、下载直链依赖它；不设则回落到后台「站点设置」的 `siteURL` |
+| `JWT_SECRET` | 可选 | 令牌签名密钥（32 位以上随机串）。不设会自动生成并存入数据库 |
+| `ADMIN_EMAIL` | 可选 | 兜底管理员邮箱（须与 `ADMIN_PASSWORD` 同时配） |
+| `ADMIN_PASSWORD` | 可选 | 兜底管理员密码。建议存为 **Secret** |
+| `FRONTEND_URL` | 可选 | 前端单独部署到别处（如 Pages）时才填；填了反代优先于内置资源 |
+| `CORS_ALLOW_ORIGINS` | 可选 | 允许跨域的源，逗号分隔，如 `https://a.com,https://b.com`。前后端同源不用配 |
+| `R2_PUBLIC_BASE` | 可选 | R2 公共访问域名，配了生成的直链不带签名 |
+| `KV_COUNT` | 可选 | KV namespace 个数，**1–5**，默认 1。⚠️ 见下方警告 |
+| `DATABASE_URL_2` … `_5` | 可选 | 备库连接串，配了每次构建自动从主库全量同步（只读冷备） |
+| `DB_FAILOVER` | 可选 | 填 `1` 打开主库故障切换，自动降级到第一个可用备库。仅应急 |
+| `DB_SYNC_SKIP` | 可选 | 全量同步时跳过的表（逗号分隔），一般不用配 |
 
-下面按方案 A 走，方案 B 的差异在第 5 节注明。
+> ⚠️ **`KV_COUNT` 必须配在构建时读得到的地方**（Workers Builds 的环境变量、或仓库根目录 `KV_COUNT` 文件）。
+> 填在「设置 → 变量和机密」是**运行时**变量，构建读不到 → 静默回落成 1，站点不报错但你以为配了 5 个只绑了 1 个。
 
----
-
-## 1. 装依赖
-
-```bash
-cd edge
-npm install
-```
-
----
-
-## 2. 建 KV 与 R2
-
-**单 KV（默认，最简单）**——直接建一个：
-
-```bash
-npx wrangler kv namespace create KV
-```
-
-**多 KV（可选，`KV_COUNT=1..5`）**——想按角色分摊并发压力时用。设置
-`KV_COUNT` 后 **不要手工建**，交给脚本：
-
-```bash
-KV_COUNT=3 npm run kv:setup     # 重写 wrangler.toml 的 KV 段
-npm run deploy                  # 缺的 namespace 会自动创建
-```
-
-> ⚠️ **`KV_COUNT` 千万别填在「Workers → 设置 → 变量和机密」里。** 那是**运行时**
-> 变量，而绑定数量必须在**构建时**确定，构建读不到它就静默落回默认值 1
-> —— 你以为配了 5 个，实际只绑了 1 个，而且**站点不报错**，很难发现。
->
-> 正确做法二选一：
-> - **在仓库根目录提交一个名为 `KV_COUNT` 的文件**，内容就是一个数字（推荐，最稳）
-> - 或在 **GitHub 仓库 → Settings → Secrets and variables → Actions → Variables**
->   里加 `KV_COUNT=5`
-
-配好后验证：构建日志里会打印实际读到多少、从哪读的：
-
-```
-  KV_COUNT = 5（来源：文件 KV_COUNT）
-✔ KV 绑定已装配：KV_COUNT=5 → 声明 KV_1..KV_5 + 兜底 KV（共 6 个绑定）
-```
-
-部署后再访问 `https://你的域名/api/v4/site/kv-status`，
-若 `distinct_namespaces` 是 `5` 就说明每个角色都绑到了独立 namespace。
-
-`kv:setup` 只认 1–5 的整数，填 6 会直接报错退出（不构建）。它把 `KV_1..KV_n`
-加一个兜底 `KV` 写进 `wrangler.toml` 的托管区（`# >>> multi-kv:begin` 之间），
-这段不要手改——下次跑会被覆盖。角色分工与回落规则见
-[README](./README.md#多个-kv--多个数据库)。
-
-> ⚠️ 改完 `KV_COUNT` 后**不要**手动再跑 `wrangler kv namespace create KV`
-> 去补绑定：重复的 `[[kv_namespaces]]` 块会让 wrangler 报错。
-> `npm run deploy` 会按 `wrangler.toml` 里现有的绑定逐个复用或创建。
-
-拿到的 id 会被写进 `wrangler.toml` 的 `[[kv_namespaces]]`：
-
-```toml
-[[kv_namespaces]]
-binding = "KV"
-id = "上一步拿到的 id"
-```
-
-> `preview_id` 只影响 `wrangler dev` 的本地模拟，可以删掉那一行，也可以再建一个
-> 预览命名空间（`--preview`）填进去。
-
-```bash
-npx wrangler r2 bucket create cloudreve-worker
-```
-
-桶名要和 `wrangler.toml` 里 `[[r2_buckets]] bucket_name` 一致（默认就是
-`cloudreve-worker`）。**不需要改绑定的名称** `binding = "R2"`，代码按这个名字取。
+**以下配置不在环境变量里，全部在管理后台**：邮件 SMTP、存储策略、全文检索、用户组权限、WebDAV 账号、站点设置。
 
 ---
 
-## 3. 建 Neon 数据库并导出连接串
+## 6. 后台必做配置
 
-1. 在 Neon 控制台新建一个项目（区域选离用户近的）。
-2. 进项目的 **Connection Details**，把 **Connection string** 复制出来，
-   形如：
+### 6.1 添加存储策略（不添加不能上传）
 
-   ```
-   postgresql://neondb_owner:xxxxxxxx@ep-xxx-xxxx.aws.neon.tech/neondb?sslmode=require
-   ```
+管理后台 → **存储策略** → 添加。
 
-   > 用 **Pooler** 的连接串也可以，Worker 走的是 HTTP 驱动，不占连接数。
-   > 但**不要**去掉 `sslmode=require`。
-
-3. 存成 Worker 机密（**不要**写进 `wrangler.toml`，那会被提交到仓库）：
-
-   ```bash
-   npx wrangler secret put DATABASE_URL
-   # 粘贴上一步的连接串，回车
-   ```
-
-4. 顺便生成一个 JWT 密钥（可选但推荐）：
-
-   ```bash
-   npx wrangler secret put JWT_SECRET
-   # 粘贴一串 32 位以上的随机字符串
-   ```
-
-   > 不设也能跑：会回退到数据库里 `settings.secret_key` 的值（首次启动自动生成）。
-   > 显式设置的好处是刷新/吊销令牌时不完全依赖数据库可读性。
-
-### 3.1（可选）加备库做容灾
-
-想要「主库挂了还有一份能顶」时，**另外新建** 1–4 个 Neon 项目（不要用同一个
-项目的别的 branch，那样故障域还是同一个），把连接串依次存成
-`DATABASE_URL_2` … `DATABASE_URL_5`：
-
-```bash
-npx wrangler secret put DATABASE_URL_2
-npx wrangler secret put DATABASE_URL_3    # 要几个存几个，最多到 _5
-```
-
-然后做两件事：
-
-**① 让备库有表结构。** 备库是空库，先把 schema 推过去。最省事的做法是把主库
-连接串临时当备库跑一次初始化——即把某个备库的连接串写进 `.dev.vars` 的
-`DATABASE_URL`，跑一次 `node scripts/migrate.mjs`（或者让 Worker 对着它冷启动
-一次，会自动建表）。**不要**手工灌数据，数据交给同步脚本。
-
-**② 同步数据。** 每次构建时 CI 会自动做一次全量同步；本地也可以手动跑：
-
-```bash
-npm run db:sync:verify     # 先看备库表结构齐不齐（缺表会告诉你是哪张）
-npm run db:sync            # 主库 → 全部备库，全量覆盖
-```
-
-> **备库是只读的。** 每次同步会用主库内容整库覆盖它，所以别把备库当第二个写入
-> 目标——写进去的东西下次同步就没了。它的定位是「一份随时可用的主库快照」。
->
-> 主库真的连不上时，可以临时把 `DB_FAILOVER` 设成 `1` 切到备库顶一会儿；
-> **主库恢复后记得删掉这个变量**，否则切换期间产生的新数据会在下次同步时被覆盖。
-
----
-
-## 4. 建表 + 初始化
-
-> **这一步通常可以跳过。** Worker 首次收到请求时会自动建表、播种三个系统用户组
-> 和默认存储策略（见 `src/db/provision.ts`），幂等且并发安全。下面的脚本只在
-> 想看每条语句的执行结果、或要在本机调试时才有用。
->
-> 管理员账号也不再需要 seed：**第一个注册的用户自动进管理员组**。
-> 管理员密码丢了？手机部署没有本机 CLI，走环境变量兜底：在 Worker 的
-> **设置 → 变量和机密**里加 `ADMIN_EMAIL` + `ADMIN_PASSWORD`（建议存成
-> Secret 类型），保存后下一个冷启动 isolate 会自动把这个邮箱设回管理员
-> 组并重置成该密码（幂等：变量值不变就不重复落库，网页里改的密码不会被
-> 覆盖）。恢复访问后把这对变量删掉即可。
-
-这两步在**本机**跑（连的是同一个 Neon 库），脚本会读取 `DATABASE_URL` 环境变量，
-或者 `edge/.dev.vars` 文件。
-
-**方式一：临时环境变量（推荐）**
-
-```bash
-export DATABASE_URL="postgresql://...你刚才那条连接串..."
-
-npx tsx --version >/dev/null 2>&1 || true   # 忽略，只是提示 node 版本
-
-node scripts/migrate.mjs
-```
-
-**方式二：写 `.dev.vars`（本地调试也用得上）**
-
-```
-# edge/.dev.vars  —— 已被 .gitignore 排除，不会提交
-DATABASE_URL="postgresql://..."
-# 可选：备库，填了之后 db:sync 会把主库全量同步过去
-DATABASE_URL_2="postgresql://..."
-# 可选：KV 个数，1–5
-KV_COUNT=1
-```
-
-```bash
-node scripts/migrate.mjs
-```
-
-`migrate.mjs` 会按文件名顺序执行 `migrations/*.sql`，每条语句打印 OK / FAIL。
-**遇到 FAIL 会立刻停下**，不会有半套 schema。
-
-预期输出（首次）：
-
-```
->>> 0001_init.sql (N statements)
-    [1/N] OK  CREATE TABLE IF NOT EXISTS groups ...
-    ...
-Migration completed.
-```
-
-接着初始化基础数据：
-
-```bash
-ADMIN_EMAIL='you@example.com' ADMIN_PASSWORD='换成你自己的强密码' node scripts/seed.mjs
-```
-
-它会做四件事（都是幂等的，重复跑安全）：
-
-1. 补齐 `settings` 表缺失的键，并生成 `siteID` / `secret_key` / `hash_id_salt`；
-2. 建三个系统用户组：`#1 Admin`、`#2 User`、`#3 Anonymous`
-   （组 ID 与原版约定一致，**不能改**，`default_group = 2` 指的就是 #2）；
-3. 建默认存储策略 `R2 Default`（type = `r2`），并绑到 User 组；
-4. 建管理员账号（邮件 + 密码），密码摘要是 `<salt>:<sha256hex(password+salt)>`。
-
-> ⚠️ **不传 `ADMIN_PASSWORD` 就不会建管理员**，脚本只打印一句提示。
-> 建完一定要能登进去 —— 否则后面没法进管理后台。
-
-### 如果你的库是从原版 Cloudreve 迁过来的
-
-**不支持。** 边缘版用的是自建的等价 schema（列名/索引一致，但少了 6 张表、
-JSON 列类型不同、没有 ent 的 migration 记录表）。请用全新的库。
-
----
-
-## 5. 接官方前端
-
-前端**只能用官方的**（<https://github.com/cloudreve/frontend>），本仓库不含任何前端代码，
-但**默认已经帮你接好了**：`npm run build` / `npm run deploy` 会先跑
-`scripts/fetch-frontend.mjs`，把官方前端构建产物准备到 `frontend/` 目录（不入库），
-`wrangler.toml` 里的 `[assets]` 已启用，静态资源与 SPA 回落由平台资源层直接处理。
-
-获取顺序（自动化，不用手动操作）：
-
-1. `frontend/` 已存在就直接复用；
-2. 本仓库 Release（tag `frontend-assets`）里的预构建包，秒级；
-3. 都没有就拉上游源码（固定提交 `19da0fe1ecd40971fafa813983d769fdce41573c`，
-   与上游 `.gitmodules` 一致），在构建机上 yarn install + vite build，约 3-5 分钟。
-
-想换前端版本：改 `scripts/fetch-frontend.mjs` 顶部的 `COMMIT` 常量。
-注意别跟到 `master` 最新 —— 前端可能和 v4.14.0 的后端契约对不上。
-
-> 本机想手动构建也行（方式与上游 `.build/build-assets.sh` 一致）：
-> `git clone` 上游仓库 → checkout 到固定提交 → `NODE_OPTIONS="--max-old-space-size=8192" yarn install && yarn run build`
-> → 把 `build/` 拷到 `edge/frontend`。用 yarn，不用 npm/pnpm。
-
-### 方案 A：随 Worker 一起发布（默认，推荐）
-
-什么都不用做。`[assets]` 已在 `wrangler.toml` 里启用：
-
-```toml
-[assets]
-directory = "./frontend"
-binding = "ASSETS"
-not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/s/*", "/f/*"]
-```
-
-方案 A 不需要配 `FRONTEND_URL`，请求全走随 Worker 发布的静态资源。
-
-> `run_worker_first` 是关键：它保证 `/api/*`、`/s/*`（分享短链）、`/f/*`（文件直链）
-> 优先交给 Worker，其余路径走静态资源与 SPA 回落。漏了它前端路由会 404。
-
-### 方案 B：前端单独部署
-
-前端部署到 Cloudflare Pages（或任何静态托管）后，在面板环境变量（或 `wrangler.toml`
-的 `[vars]`）里加：
-
-```toml
-[vars]
-FRONTEND_URL = "https://your-frontend.pages.dev"
-```
-
-`FRONTEND_URL` 的优先级高于内置静态资源，非 `/api` 请求会原样反代过去。
-后端代码同样不需要改。
-
-> 前端构建时要让它自己的 API 基址为空（默认就是同源相对路径），否则会指向错误的域名。
-
----
-
-## 6. 发布
-
-```bash
-npm run typecheck    # 可选，确认没有类型错误
-npm run deploy
-```
-
-成功后设置 `SITE_URL` 再 `npm run deploy` 一次（两种加法任选：面板 →
-环境变量里加；或 wrangler.toml 里加一段 `[vars]`）：
-
-```toml
-[vars]
-SITE_URL = "https://你的域名"
-```
-
-> `SITE_URL` 参与生成分享短链、下载直链、OneDrive OAuth 回调地址。
-> 留成 `example.workers.dev` 会让所有生成的链接都指向错误的主机。
-
-如果配了自定义域名，在 Cloudflare 后台 **Workers → 你的 Worker → Settings → Domains & Routes**
-里添加，然后在 `settings` 表里把 `siteURL` 也设成同一个域名
-（`siteURL` 优先于 `SITE_URL`，见 `src/settings/provider.ts` 的 `siteUrl`）。
-
----
-
-## 7. 定时任务
-
-`wrangler.toml` 里已经有：
-
-```toml
-[triggers]
-crons = ["0 * * * *"]
-```
-
-每小时跑一次回收站清理（对应上游的 `trash_collector` 队列任务）。
-`npm run deploy` 会自动注册，不需要额外操作。
-
----
-
-## 8. 验收清单
-
-按顺序验一遍，任何一步不对都别再往下走：
-
-1. `curl https://你的域名/api/v4/site/ping` → `{"code":0,...}`
-2. 打开首页，能看到官方前端的登录页（不是纯文本的「后端已就绪」提示）
-3. 用第 4 步建的管理员账号登录成功
-4. 新建一个文件夹、上传一个小文件、下载回来 —— 校验内容一致
-5. 建立分享链接（带密码），用一个浏览器隐身窗口打开，输入密码能访问
-6. 把文件删掉 → 回收站里能看到（显示的是原文件名，不是一串随机字符）→ 恢复成功
-7. 进管理后台，能看到用户列表与存储策略
-
-> 第 6 步特意提「原文件名」：回收站项的 `files.name` 会被改成随机 UUID，
-> 显示名靠 `sys:restore_uri` 元数据回落。如果看到随机字符，说明软删除的元数据没写进去。
-
----
-
-## 9. 配置存储策略
-
-### 用 R2（第 2 步建好的那个桶）
-
-管理后台 → 存储策略 → 编辑 `R2 Default`：
-
-- 类型：`r2`（边缘版内置，不需要填 server / ak / sk）
-- 桶名：留空即可（绑定已经指明了桶）
-
-想让 R2 直链不走 Worker 中转，需要一个便宜甚至免费的公共访问域名：
-
-- 在 Cloudflare 给桶配一个自定义域（R2 → 你的桶 → Settings → Public access）
-- 然后把 `R2_PUBLIC_BASE` 加到 `wrangler.toml` 的 `[vars]`：
-
-  ```toml
-  [vars]
-  R2_PUBLIC_BASE = "https://files.example.com"
-  ```
-
-配了之后 `POST /file/url` 会返回不带签名的直链；不配则返回
-`/api/v4/file/content/:id/:speed/:name?sign=...` 由 Worker 流式代理。
-
-### 用 OneDrive
-
-管理后台 → 存储策略 → 新建，类型选 `onedrive`，字段对应关系：
-
-| 策略字段 | 填什么 |
+| 类型 | 关键填写项 |
 |---|---|
-| `server` | `https://graph.microsoft.com/v1.0`（**决定了 OAuth 端点**：host 是 `microsoftgraph.chinacloudapi.cn` 时走世纪互联，否则走全球版） |
-| `bucket_name` | Azure 应用的 **client_id** |
-| `secret_key` | Azure 应用的 **client_secret** |
-| `access_key` | **refresh_token**（原版就把 refresh token 存在这个字段） |
-| `settings.od_driver` | `me/drive` 或 `sites/<站点ID>/drive`，默认 `me/drive` |
-| `settings.od_redirect` | OAuth 回调地址。**必须和 Azure 应用里登记的重定向 URI 完全一致** |
+| **R2**（推荐） | 类型选 **`s3`**（R2 兼容 S3 协议）；填桶名、Endpoint（`https://<accountid>.r2.cloudflarestorage.com`）、AccessKey / SecretKey、区域填 `auto` |
+| S3 / OSS / COS / OBS / KS3 / 七牛 | 对应类型，填桶名、Endpoint、AK/SK、区域 |
+| OneDrive / SharePoint | 类型选 `onedrive`，需在策略页**点授权**跳转微软登录；授权失效时需重新授权 |
+| 又拍云 | 类型选 `upyun`，填空间名、操作员、密码、加速域名 |
+| 本机 | 类型选 `local` —— Workers 环境**没有持久磁盘**，仅用于调试 |
+| 负载均衡 | 类型选 `load_balance`，在多个策略间按权重分流 |
 
-然后在策略编辑页点「获取授权链接」，走完微软的授权流程，把回调到的
-refresh_token 填回 `access_key`。
+添加后到**用户组 → 编辑**，把该策略绑定给对应用户组。组没绑策略，上传会提示 `No policy selected`。
 
-> OneDrive 的**上传走客户端直传**：Worker 调 `createUploadSession` 拿到 `uploadUrl`
-> 交给浏览器，分片由浏览器直接 PUT 给微软，不经过 Worker。
-> 云端限速（`speed`）在 Workers 上无法实现，URL 里的 speed 段只是协议占位。
+### 6.2 邮件（可选）
+
+管理后台 → **设置 → 邮件**，填 SMTP：主机、端口、用户名、密码、加密方式、发件人。
+
+开「注册需邮件激活」后，新用户必须收邮件激活才能登录 —— 没配好 SMTP 会导致所有人都注册不了。
+
+### 6.3 站点地址
+
+管理后台 → **设置 → 站点**，把 `siteURL` 填成你的站点地址（与 `SITE_URL` 一致）。带多个地址用英文逗号分隔，**每段都要带 `https://`**（写成 `pan.example.com` 会报 `Invalid siteURL`）。
+
+### 6.4 开启 WebDAV（可选）
+
+1. 用户组 → 编辑 → 勾选 **WebDAV** 权限。
+2. 用户侧 → 「连接与挂载」→ 创建 WebDAV 账号，得到专用密码（**不是登录密码**）。
 
 ---
 
-## 10. 配置邮件（可选）
+## 7. 可选：多 KV（`KV_COUNT`）
 
-不配也能跑 —— 注册、登录、文件操作都不依赖它。配了才有：**注册邮件激活、
-找回密码、后台测试发信**。
+单 KV 在并发高时会撞写入限速。设 `KV_COUNT=2..5` 按角色分摊：
 
-**邮件配置在管理后台，不在 `wrangler.toml`，也不需要 `wrangler secret`。**
-
-进 **管理后台 → 设置 → 邮件**，按你的服务商填：
-
-| 字段 | 填什么 |
+| 绑定 | 角色 |
 |---|---|
-| 发件人名称 | 收件人看到的名字，如 `Cloudreve` |
-| 发件人地址 | 必须是服务商**已验证域名**下的邮箱 |
-| SMTP 服务器 | 服务商的 SMTP 主机 |
-| SMTP 端口 | **465 或 587**（见下方警告） |
-| SMTP 用户名 / 密码 | 服务商给的凭据 |
-| 回复地址 | 可不填 |
-| 强制 SSL | 一般不用开；开了就要求 TLS 必须成功 |
+| `KV_1` | 站点设置缓存 |
+| `KV_2` | 会话 / 验证码 / 2FA |
+| `KV_3` | 上传会话 / 打包 / WebDAV 锁 |
+| `KV_4` | 外部凭据缓存 |
+| `KV_5` | 自举标记 |
 
-以 Resend 为例：
+`KV` 是兜底绑定，未配置 `KV_n` 时所有角色回落到它，所以 `KV_COUNT=1` 只需一个 namespace。
 
-| 字段 | 值 |
+超过 5 会直接拒绝构建。
+
+**缓存维护**：构建期 `npm run kv:purge` 清空重填；运行时由每小时 Cron 覆盖写刷新。
+
+---
+
+## 8. 可选：多数据库容灾
+
+1. 在 Neon 另建 1–4 个项目，把连接串分别配到 `DATABASE_URL_2` … `_5`。
+2. 每次构建自动把主库**整库全量同步**到全部备库。
+3. 主库挂了：临时把 `DB_FAILOVER` 设为 `1`，自动切到第一个可用备库。
+
+⚠️ 备库是**冷备不是双活**：切换期间写入备库的数据，会在下次全量同步时被主库内容覆盖。
+
+---
+
+## 9. 定时任务
+
+`wrangler.toml` 已配置 `crons = ["0 * * * *"]`（每小时整点），做两件事：
+
+- 刷新缓存（覆盖写，开销恒定）
+- 清理回收站到期文件
+
+不用额外配置。想手动触发：Cloudflare → Worker → 触发器 → Cron，手动执行。
+
+---
+
+## 10. 桌面同步客户端（Windows）
+
+官方客户端走 **Windows Cloud Files API**（不是 WebDAV）：
+
+1. 客户端登录时选「用 Cloudreve 登录」→ OAuth 授权 → 选本地空目录作为同步根。
+2. 绑定报 `Invalid redirect URI`：服务端需放行相对回调 `/callback/desktop`（已修复）。
+3. 打开同步根报 **「云操作不成功」**：服务端文件响应缺 `path` 字段会导致目录枚举失败（已修复）。
+4. 添加网盘报 **Failed to start drive**：这是 **Windows 本地问题**，与服务端无关 —— 先在客户端移除已有网盘，删掉/换一个**空目录**，重启客户端后再添加。
+
+---
+
+## 11. 更新版本
+
+Workers Builds 会在仓库有新提交时自动重新部署。
+若你是 fork：在 GitHub 上 `Sync fork`，或到 Cloudflare 手动 Retry deployment。
+
+---
+
+## 12. 排错
+
+| 现象 | 原因 / 处理 |
 |---|---|
-| SMTP 服务器 | `smtp.resend.com` |
-| SMTP 端口 | `465` |
-| SMTP 用户名 | `resend` |
-| SMTP 密码 | API Key（`re_` 开头） |
-| 发件人地址 | `no-reply@你的已验证域名` |
+| 打开站点是「后端已就绪」纯文本页 | 前端没构建成功。看构建日志里 `fetch-frontend` 是否失败；重新部署一次 |
+| 登录后立刻被登出、刷新令牌失败 | 检查 `DATABASE_URL` 是否可达；多库时确认没误开 `DB_FAILOVER` |
+| 上传提示 `No policy selected` | 用户组没绑定存储策略（见 6.1） |
+| 上传大文件失败 | Workers 请求体上限 + 存储策略的分片配置；大文件走分片上传 |
+| 提示 `Invalid siteURL` | 站点地址每段都要带 `https://`（见 6.3） |
+| Windows 挂载 WebDAV「位置不可用」 | `wrangler.toml` 的 `run_worker_first` **必须含 `/dav/*`**，否则静态层对 PROPFIND/PUT 回 405 |
+| 定时任务没跑 | Cloudflare → Worker → 触发器，确认 Cron 存在；或手动触发一次 |
+| 想清空重来 | 删 Neon 项目重建 + 改 `DATABASE_URL`，或执行 `npm run kv:purge` 清缓存 |
 
-填完点「发送测试邮件」，收件人填你自己的邮箱。收到就说明通了。
+查看运行状态：
 
-> ⚠️ **端口 25 用不了，这是最容易踩的坑。**
-> Cloudflare Workers 禁止出站连接 25 端口（反滥用策略，官方文档原文：
-> `Connections to port 25 are prohibited`）。而上游 Cloudreve 的默认 SMTP 端口
-> 恰好就是 25 —— 所以**刚部署完什么都不改，直接发信必然失败**。
-> 报错信息里会明确让你改成 465 或 587。
-
-### 打开「注册需邮件激活」
-
-设置项 `email_active` 默认是 `0`（关闭）。打开后新注册用户状态为 `inactive`，
-必须点邮件里的链接才能登录。
-
-**打开前先确认上面的测试发信是通的。** 否则新用户注册完就卡住进不来 ——
-真遇到了也不至于丢账号：到管理后台的用户列表里把该用户状态手动改成 `active` 即可。
-
----
-
-## 11. 已知限制与排错
-
-### 「前端显示后端已就绪」的纯文本页
-
-说明既没配 `[assets]` 也没配 `FRONTEND_URL`。回第 5 步。
-
-### 登录后立刻被登出 / 刷新令牌失败
-
-`hash_id_salt` 或 `secret_key` 被改过（比如重复跑了 `ensureSettings` 之外的手工
-UPDATE）。这两个键一旦生成就**不能再变** —— hashid 是哈希出来的用户/文件 ID，
-salt 变了所有旧 ID 全部失效。要换就接受所有链接与令牌作废。
-
-### 上传到某个大小就失败
-
-- R2 策略：检查策略的「最大文件大小」（`max_size`，0 = 不限）。
-- OneDrive 策略：单文件超过 4MB 会走分片上传，分片大小必须是 320KiB 的整数倍
-  （驱动已处理）。失败先看 Graph API 返回的 `error.message`。
-
-### 大文件下载中断
-
-`GET /api/v4/file/content/*` 会把整个对象**流式**转发出去，Worker 有 CPU 时间
-与内存上限，但流式转发不占 CPU。真正的限制是客户端的超时设置。
-
-### 定时任务没跑
-
-`wrangler.toml` 的 `[triggers] crons` 只在**发布后**生效，`wrangler dev` 不会触发。
-手动验证：
-
-```bash
-npx wrangler tail          # 另开一个终端
-# 等整点，或到 Cloudflare 后台手动触发一次 Cron
-```
-
-### 想清空重来
-
-```sql
-DROP SCHEMA public CASCADE;
-CREATE SCHEMA public;
-```
-
-然后在 Neon 控制台重新授权，再跑一遍第 4 步。
-**R2 里的对象不会跟着删**，需要单独清桶。
-
----
-
-## 12. 官方桌面客户端接入
-
-官方 [Cloudreve Desktop](https://www.cloudreve.org)（Windows 桌面端，MSIX 安装）用
-OAuth 2.0 授权码 + PKCE 登录，client_id 编译在客户端里。边缘版从 v4.14 起支持
-**未知客户端自动注册**：桌面端第一次发起登录时，带着它内置的 client_id 打开网页
-授权页，后端发现该 client_id 不在库里会自动登记（名字形如 `Client xxxxxxxx`，
-scope 放开常用全集，回调接受任意 URI —— 包括 `cloudreve://` 自定义协议），
-无需管理员预先建应用。
-
-使用步骤：
-
-1. 桌面端填入站点地址（就是 Worker 的地址），点登录 —— 浏览器弹出官方授权页。
-2. 登录并点「授权」，浏览器把授权码交回桌面端，完成。
-3. 管理后台 → OAuth 应用，可以看到自动登记的客户端，可改名、收紧 scope、
-   或直接停用。
-
-排错：
-
-| 现象 | 原因 |
-|---|---|
-| 「应用不存在 / no such application」 | 部署的版本低于本节所述功能，更新到最新 main |
-| 授权页打开但报 redirect 错误 | 手工建的应用必须把回调 URI 精确填进「重定向 URI」（每行一个）；自动登记的客户端无此限制 |
-| 授权成功但桌面端仍提示失败 | 确认 `SITE_URL` 与桌面端填的地址完全一致（含 https），否则 cookie 域对不上 |
-
-第三方应用（自己写的脚本、App）同理：把你的 client_id 随便编成一个 UUID 形态，
-直接走 `GET /session/authorize?...&client_id=<你的UUID>` 即可自动登记。
-
----
-
-## 13. 安全提醒
-
-- `.dev.vars` 与 `wrangler secret` 里的东西**永远不要提交**。`.gitignore` 已经挡了
-  `.dev.vars`，但别把它复制成别的文件名。
-- 管理后台的默认账号是第 4 步自己建的，**没有默认密码这回事** —— 如果忘了，
-  重新跑一次 `seed.mjs` 换一个邮箱建新管理员，或者直接改库里的 `users.password`。
-- 上生产前确认 `siteURL` / `SITE_URL` 是 https 域名。
-- 跨域默认关闭。除非官方前端部署在别的域，否则不要开 `CORS_ALLOW_ORIGINS`。
+- `/api/v4/site/ping` —— 连通性
+- `/api/v4/site/db-status` —— 数据库 / 分域状态
+- `/api/v4/site/kv-status` —— KV 绑定状态
