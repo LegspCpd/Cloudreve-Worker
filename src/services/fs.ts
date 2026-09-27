@@ -524,12 +524,17 @@ export class FileSystemService {
     };
 
     // path 必须**始终**下发：官方 `BuildFileResponse`（service/explorer/response.go:425）
-    // 无条件写 `Path: f.Uri(false).String()`，根目录同样有值（`cloudreve://my/` 之类）。
+    // 无条件写 `Path: f.Uri(false).String()`，根目录同样有值（如 `cloudreve://my`）。
     // 原实现只对「非根目录」下发 path —— 这是对官方行为的偏差，且会直接噎死官方桌面
     // 同步客户端：它把 path 当**必填**字段反序列化（cloudreve-api 的 FileResponse.path:
     // String），而列表响应里的 parent 就是根目录，缺 path 会让整个 ListResponse 反序列化
     // 失败 → 目录枚举回调失败 → Windows 报「云操作不成功」（STATUS_CLOUD_FILE_UNSUCCESSFUL）。
-    res.path = userViewUri.toString();
+    // 官方根 URI 是 `cloudreve://my`（dbfs/navigator.go:542 的 newMyUri + NewUriFromString
+    // 会去掉路径尾斜杠），**不带**尾斜杠；本实现的 URI 恒带 path '/'，故根目录要去掉尾斜
+    // 杠，与官方字节级一致（严格客户端可能对 path 做字符串比较）。
+    res.path = userViewUri.isRoot
+      ? userViewUri.toString().replace(/\/+$/, '')
+      : userViewUri.toString();
 
     // 能力位：上游 BuildListResponse 对**每个文件和 parent** 都下发
     // navigator 能力（service/explorer/response.go:388,401），前端「新建」菜单、
