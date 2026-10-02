@@ -103,8 +103,18 @@ export class DownloadService {
       const driver = this.ctx.driverFor(policy);
       const caps = driver.capabilities();
 
+      // 直链驱动若无法在直链上带出我们指定的文件名，强制下载时改走站点代理。
+      // OneDrive 即如此：@microsoft.graph.downloadUrl 由微软按存储对象名下发
+      // Content-Disposition，而对象名是 `{uuid}_{originname}` 这类命名规则的产物，
+      // 浏览器会存成「随机前缀_真名」。走代理后由 Worker 下发 attachment 头。
+      // 策略开了「由浏览器处理下载」(stream_saver) 时文件名由浏览器侧指定，不必中转。
+      const proxyForFilename =
+        options.download === true &&
+        caps.directUrlFilename === false &&
+        driver.settings?.stream_saver !== true;
+
       let url: string;
-      if (!caps.proxyRequired) {
+      if (!caps.proxyRequired && !proxyForFilename) {
         // 驱动可直链
         url = await driver.source(entity.source, {
           expire: expiresAt > 0 ? expiresAt * 1000 : undefined,

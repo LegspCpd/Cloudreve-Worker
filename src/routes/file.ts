@@ -313,6 +313,23 @@ fileRoutes.get('/thumbimg', async (c) => {
 });
 
 /**
+ * 从 `bytes a-b/total` 形式的 Content-Range 里算出本次返回的字节数。
+ *
+ * 206 响应的 Content-Length 必须是**这一段**的长度，不是对象总大小。
+ * 驱动返回的 `content.size` 在带 Range 时是总大小（S3 取 `content-range`
+ * 的 total 段、OneDrive 取 Graph 的 size），直接拿它当 Content-Length 会让
+ * 断点续传的客户端一直等后面永远不来的字节。
+ */
+function contentRangeLength(contentRange: string): number | null {
+  const m = /^bytes\s+(\d+)-(\d+)\//i.exec(contentRange.trim());
+  if (!m) return null;
+  const start = Number(m[1]);
+  const end = Number(m[2]);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  return end - start + 1;
+}
+
+/**
  * 实体内容分发（代理下载）。
  * 需要 URL 签名；支持 Range，便于视频拖动。
  */
@@ -363,7 +380,11 @@ const serveContent = async (c: AppRequest) => {
     headers.set('Accept-Ranges', 'bytes');
     if (content.contentRange) {
       headers.set('Content-Range', content.contentRange);
-      headers.set('Content-Length', String(content.size));
+      // 206 的 Content-Length 取本段长度，取不到再退回总大小
+      headers.set(
+        'Content-Length',
+        String(contentRangeLength(content.contentRange) ?? content.size),
+      );
     } else {
       headers.set('Content-Length', String(content.size));
     }

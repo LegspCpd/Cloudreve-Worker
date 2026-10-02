@@ -96,6 +96,18 @@ export interface DriverCapabilities {
   thumbSupportedExts: string[];
   thumbSupportAllExts: boolean;
   thumbMaxSize: number;
+  /**
+   * 直链（`source()` 返回的远端地址）能否带上我们指定的文件名。
+   *
+   * S3 兼容驱动靠预签名参数 `response-content-disposition` 做到，为 true；
+   * OneDrive 的 `@microsoft.graph.downloadUrl` 是微软按存储对象名下发
+   * Content-Disposition，而对象名又是 `{uuid}_{originname}` 这类命名规则生成的，
+   * 改不了 —— 为 false。这类驱动在强制下载时必须改走站点代理，由 Worker 下发
+   * attachment 头，否则浏览器会把「随机前缀_真名」存下来。
+   *
+   * 不声明时按 true 处理。
+   */
+  directUrlFilename?: boolean;
 }
 
 export interface StorageDriver {

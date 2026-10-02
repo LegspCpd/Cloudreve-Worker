@@ -122,6 +122,9 @@ export class OneDriveDriver implements StorageDriver {
       thumbSupportedExts: this.settings.thumb_exts ?? [],
       thumbSupportAllExts: this.settings.thumb_support_all_exts === true,
       thumbMaxSize: this.settings.thumb_max_size ?? 0,
+      // 下载地址是 @microsoft.graph.downloadUrl，文件名由微软按存储对象名下发，
+      // 无法覆盖 —— 强制下载要改走站点代理（见 DownloadService.getUrls）。
+      directUrlFilename: false,
     };
   }
 
