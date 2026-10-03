@@ -79,6 +79,29 @@ function detectRepoSlug() {
 }
 
 /**
+ * 带重试地下载预构建包。CI 出网偶发抖动很常见（DNS、TLS、以及 GitHub
+ * Release 会 302 到 objects.githubusercontent.com，半路断流），一次 fetch
+ * 拿到非 200 就被判成「没有预构建包」会直接退回源码现构建，白白多花好几分钟。
+ * 这里只对 5xx / 网络错误重试（404 / 403 是「真没有 / 没权限」，重试无意义）。
+ */
+async function fetchWithRetry(url, attempts = 3) {
+  let status = 0;
+  for (let i = 1; i <= attempts; i += 1) {
+    try {
+      const res = await fetch(url, { redirect: 'follow' });
+      if (res.ok) return res;
+      status = res.status;
+      if (res.status === 404 || res.status === 403) return res;
+    } catch {
+      status = 0;
+    }
+    if (i < attempts) await new Promise((r) => setTimeout(r, 1000 * i));
+  }
+  console.log(`  （预构建包下载重试 ${attempts} 次仍未成功，最后一次：${status ? `HTTP ${status}` : '网络错误'}）`);
+  return { ok: false, status };
+}
+
+/**
  * 官方前端的 index.html 是个模板：{siteName} / {pwa_small_icon} /
  * var(--defaultThemeColor) 这些占位符在原版里由 Go 后端运行时填充
  * （middleware/frontend.go），静态部署拿不到这一步，浏览器会直接看到
@@ -158,7 +181,7 @@ try {
   if (slug && process.env.CLOUDREV_FE_RELEASE !== '0') {
     const url = `https://github.com/${slug}/releases/download/${RELEASE_TAG}/${RELEASE_ASSET}`;
     console.log(`  尝试从 Release 下载预构建包：${url}`);
-    const res = await fetch(url, { redirect: 'follow' });
+    const res = await fetchWithRetry(url);
     if (res.ok) {
       writeFileSync(TARBALL_PATH, Buffer.from(await res.arrayBuffer()));
       // tar 的路径参数一律用**相对名 + cwd**：Windows 自带的 bsdtar 会把
@@ -170,8 +193,14 @@ try {
       cpSync(inner, TARGET, { recursive: true });
       cleanup();
       if (existsSync(path.join(TARGET, 'index.html'))) {
-        patchIndexHtml();
-        writeHeaders();
+        // 占位符填充 / _headers 注入失败**不能**拖累快路径 —— 那只是锦上添花，
+        // 抛出去会被外层 catch 捕获、误判成「Release 不可用」而退回源码构建。
+        try {
+          patchIndexHtml();
+          writeHeaders();
+        } catch (e) {
+          console.log(`  （占位符填充/头注入失败，不影响前端本体，继续：${e?.message || e}）`);
+        }
         console.log('✅ 前端就绪（Release 预构建包）。');
         process.exit(0);
       }
