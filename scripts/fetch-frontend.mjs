@@ -77,7 +77,25 @@ function patchIndexHtml() {
     .replaceAll('{pwa_small_icon}', '/static/img/favicon.ico')
     .replaceAll('{pwa_medium_icon}', '/static/img/logo192.png')
     .replaceAll('var(--defaultThemeColor)', '#1976d2');
-  if (patched !== html) writeFileSync(file, patched);
+
+  // 预加载入口脚本：Vite 只 modulepreload 了 common/react 两个分片，
+  // 1.5MB 的主包没有预加载，Lighthouse 会报「Preload key requests」。
+  // 显式加一条 preload 并给入口标 fetchpriority=high，让主包尽早并行下载。
+  // preload 与 module 脚本是同源 URL，浏览器不会重复下载。
+  const entryMatch = patched.match(/<script[^>]*\ssrc="(\/assets\/index-[^"]+\.js)"[^>]*>/);
+  let finalHtml = patched;
+  if (entryMatch) {
+    const entrySrc = entryMatch[1];
+    const newEntry = entryMatch[0].includes('fetchpriority')
+      ? entryMatch[0]
+      : entryMatch[0].replace('<script', '<script fetchpriority="high"');
+    const preload = `<link rel="preload" as="script" crossorigin href="${entrySrc}">`;
+    if (!finalHtml.includes(preload)) {
+      finalHtml = finalHtml.replace(entryMatch[0], `${preload}\n  ${newEntry}`);
+    }
+  }
+
+  if (finalHtml !== html) writeFileSync(file, finalHtml);
 }
 
 /**
