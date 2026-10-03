@@ -58,6 +58,27 @@ function cleanup() {
 }
 
 /**
+ * 解析 owner/repo，用来拼 Release 预构建包的下载地址。
+ *
+ * 坑：CI 检出时 `git remote get-url origin` 常常**没有 `.git` 后缀**
+ * （GitHub Actions 的 actions/checkout 就是这样），也可能带
+ * `x-access-token:` 前缀或 `git@github.com:` 形式。老写法
+ * `([^/.]+)\.git` 强制要求 `.git` 结尾，匹配失败就让整个 Release 快路径
+ * 被静默跳过，每次都退回源码现构建 —— 白白多花 1~3 分钟。
+ *
+ * 这里优先用 GitHub Actions 直接给的 GITHUB_REPOSITORY，再退回一个
+ * 容忍多种形式的正则（.git 可选、token 前缀无所谓、结尾斜杠无所谓）。
+ */
+function detectRepoSlug() {
+  const gh = (process.env.GITHUB_REPOSITORY || '').trim();
+  if (/^[^/\s]+\/[^/\s]+$/.test(gh)) return gh;
+  const raw = run('git', ['remote', 'get-url', 'origin']).all.trim();
+  const m = raw.match(/github\.com[/:]([^/\s]+)\/([^/\s]+)/);
+  if (!m) return null;
+  return `${m[1]}/${m[2].replace(/\.git$/, '')}`;
+}
+
+/**
  * 官方前端的 index.html 是个模板：{siteName} / {pwa_small_icon} /
  * var(--defaultThemeColor) 这些占位符在原版里由 Go 后端运行时填充
  * （middleware/frontend.go），静态部署拿不到这一步，浏览器会直接看到
@@ -130,10 +151,12 @@ cleanup();
 
 // --- 2. 同仓库 Release 里的预构建包（公开仓库时走这条，秒级） ---
 try {
-  const origin = run('git', ['remote', 'get-url', 'origin']);
-  const m = origin.all.match(/github\.com[/:]([^/]+)\/([^/.]+)\.git/);
-  if (m && process.env.CLOUDREV_FE_RELEASE !== '0') {
-    const url = `https://github.com/${m[1]}/${m[2]}/releases/download/${RELEASE_TAG}/${RELEASE_ASSET}`;
+  const slug = detectRepoSlug();
+  if (!slug) {
+    console.log('  没能解析出仓库标识（GITHUB_REPOSITORY / git remote 都不可用），跳过预构建包。');
+  }
+  if (slug && process.env.CLOUDREV_FE_RELEASE !== '0') {
+    const url = `https://github.com/${slug}/releases/download/${RELEASE_TAG}/${RELEASE_ASSET}`;
     console.log(`  尝试从 Release 下载预构建包：${url}`);
     const res = await fetch(url, { redirect: 'follow' });
     if (res.ok) {

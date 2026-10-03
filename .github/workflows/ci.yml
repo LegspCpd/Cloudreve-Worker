@@ -40,6 +40,16 @@ jobs:
           node-version: 22
           cache: npm
 
+      # 缓存官方前端产物：键里带上 fetch-frontend.mjs（内含固定的上游
+      # COMMIT）与 frontend-patches/ 的内容哈希 —— 前端内容只因这两者变化，
+      # 所以命中即可直接复用，省掉 Release 包下载或整段源码构建。
+      # build 与 deploy 两个 job 共用同一键，后者复用前者刚存好的。
+      - name: 缓存前端产物
+        uses: actions/cache@v4
+        with:
+          path: frontend
+          key: frontend-${{ hashFiles('scripts/fetch-frontend.mjs', 'frontend-patches/**') }}
+
       - name: 安装依赖
         run: npm install
 
@@ -100,6 +110,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
+
+      # 缓存官方前端产物：键里带上 fetch-frontend.mjs（内含固定的上游
+      # COMMIT）与 frontend-patches/ 的内容哈希 —— 前端内容只因这两者变化，
+      # 所以命中即可直接复用，省掉 Release 包下载或整段源码构建。
+      # build 与 deploy 两个 job 共用同一键，后者复用前者刚存好的。
+      - name: 缓存前端产物
+        uses: actions/cache@v4
+        with:
+          path: frontend
+          key: frontend-${{ hashFiles('scripts/fetch-frontend.mjs', 'frontend-patches/**') }}
 
       - name: 安装依赖
         run: npm install
