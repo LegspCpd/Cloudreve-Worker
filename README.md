@@ -20,6 +20,8 @@ KV 和 R2 会自动建，建表和初始化也是第一次打开站点时自动�
 
 不用按钮也行：Workers & Pages → Create → 选你 fork 的仓库，构建命令填 `npm install`，部署命令填 `npm run deploy`，输出目录空着。`npm run deploy` 会自己把 KV 和 R2 处理好（账号里已有同名的直接复用，没有才新建），真实 ID 也会自己写回 `wrangler.toml`。然后到项目设置里加 `DATABASE_URL`，保存后重新部署。
 
+构建命令别改成 `npm run build`——那是给 CI 做 dry-run 检查的，放构建阶段会多打一遍包，构建时间成倍涨。
+
 ## 环境变量
 
 部署页只让你填 `DATABASE_URL` 一项，其他全是可选的，想加的时候去 Workers → 设置 → 变量和机密里加。

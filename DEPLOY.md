@@ -18,14 +18,14 @@ postgresql://user:pass@ep-xxx.aws.neon.tech/neondb?sslmode=require
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/LegspCpd/Cloudreve-Worker)
 
-点按钮，登 Cloudflare，授权完进部署页，把 `DATABASE_URL` 填成第 1 步那串，其他留空，点 Deploy。构建大概五分钟。
+点按钮，登 Cloudflare，授权完进部署页，把 `DATABASE_URL` 填成第 1 步那串，其他留空，点 Deploy。构建通常一两分钟。
 
 部署脚本在背后帮你干了这些，不用管：
 
 - 建 Cloudflare 的 KV namespace（放缓存和会话）和 R2 bucket（默认存储桶）
 - 把真实资源 ID 填回 `wrangler.toml`
 - 把 `DATABASE_URL` 写成 Worker 的运行时 Secret
-- 拉官方前端源码构建好，跟 Worker 一起发
+- 备好官方前端（仓库 Release 里有预构建包就直接用，秒级；没有才拉官方源码现构建），跟 Worker 一起发
 
 建表也在里面了——迁移脚本打包进了 Worker，第一次打开站点时自动执行，不用跑任何迁移命令。
 
@@ -39,6 +39,8 @@ Workers & Pages → Create → 选你 fork 的仓库，只填两格：
 | 部署命令 | `npm run deploy` |
 
 输出目录留空。然后在项目**设置 → 环境变量**里加 `DATABASE_URL`，保存后重新部署。
+
+> 构建命令那格**别填 `npm run build`**。它是给 CI 做 dry-run 检查用的，放构建阶段会白打一遍包、多拉一遍前端，构建时间成倍涨（一两分钟变八九分钟）。
 
 `npm run deploy` 对已经存在的同名 KV / R2 是直接复用，不存在才新建，重跑几次不会多出一堆垃圾资源。
 
@@ -155,6 +157,7 @@ Workers Builds 会在仓库有新提交时自动重新部署。你是 fork 的�
 | Windows 挂载 WebDAV 说「位置不可用」 | `wrangler.toml` 的 `run_worker_first` 里**必须有 `/dav/*`**，不然静态层对 PROPFIND / PUT 直接回 405 |
 | 定时任务没跑 | Cloudflare → Worker → 触发器，看 Cron 在不在，或者手动触发一次 |
 | 想清空重来 | 删掉 Neon 项目重建再改 `DATABASE_URL`，或者跑 `npm run kv:purge` 清缓存 |
+| 构建从一两分钟变八九分钟 | 前端没走预构建包、退回源码现构建了。先确认构建命令是 `npm install` 不是 `npm run build`，再看构建日志有没有「✅ 前端就绪（Release 预构建包）」这行 |
 
 看运行状态可以开这几个：
 
