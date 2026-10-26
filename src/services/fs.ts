@@ -77,7 +77,7 @@ import { isShareInvalid } from './share-rules';
 import { publish } from './events';
 import { RATE_LIMITS, hitRateLimit } from '../lib/rateLimit';
 import { stageMark } from '../lib/timings';
-import { coloCacheGetJson, coloCachePutJson } from '../lib/coloCache';
+import { coloCacheDelete, coloCacheGetJson, coloCachePutJson } from '../lib/coloCache';
 import { normalizeFile } from '../db/repo';
 
 /**
@@ -315,20 +315,26 @@ export class FileSystemService {
 
     // 路径 → 目录行的 colo 级缓存（60s）：这个站的流量稀疏，几乎每个请求都是
     // 新 isolate，进程内缓存不命中，没有这层每次导航都要重走一遍逐段查询。
-    // 改名/删除后旧路径最多还能解析 60s —— 目录本身还在（只是改名/已软删），
-    // 操作落在同一个 id 上，无越权无错数据。符号目录不缓存（walk 会抛错，
-    // 缓存命中会绕过那个检查）。
+    //
+    // ⚠️ 命中必须校验「还挂在树上」：**Cache API 实测会活过声明的 max-age**
+    // （2026-10-26：删掉的目录 15 分钟后还能从缓存里解析出来）。脱离树的行
+    // （进了回收站，file_children 被置 NULL）一律当 miss 重查 —— 删除/恢复
+    // 因此天然自愈。符号目录同理不缓存不命中（walk 会抛错，缓存会绕过）。
     const cacheKey = `dirresolve:${ownerId}:${uri.elements.join('/')}`;
     const hit = await coloCacheGetJson<Record<string, unknown>>(cacheKey, 60);
     if (hit) {
       const row = normalizeFile(hit);
-      if (row.is_symbolic) throw Err.symbolicFolder();
-      return row;
+      if (row.file_children !== null) {
+        if (row.is_symbolic) throw Err.symbolicFolder();
+        return row;
+      }
+      // 脱离树的旧行：当 miss，顺手清掉
+      void coloCacheDelete(cacheKey);
     }
 
     const root = await this.ctx.files.ensureRoot(ownerId);
     const target = await this.walk(root, uri.elements);
-    if (target && !target.is_symbolic) {
+    if (target && target.file_children !== null) {
       void coloCachePutJson(cacheKey, { ...target }, 120);
     }
     return target;
@@ -1021,7 +1027,9 @@ export class FileSystemService {
     if (nameError) throw new AppError(CodeIllegalObjectName, nameError);
 
     const existing = await this.ctx.files.resolvePath(user.id, uri.elements);
-    if (existing) {
+    // 回收站里的同名旧节点（已脱离树）不算「已存在」—— 删了再建同名是合法操作，
+    // 拿回收站行当结果会把后续写操作全部带到废节点上（外键 500 的根源之一）。
+    if (existing && !this.isInTrash(existing)) {
       if (options.errOnConflict) throw Err.objectExist();
       return this.buildFileResponse(existing, { owned: true });
     }

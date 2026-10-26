@@ -995,11 +995,18 @@ export class FileRepo {
    */
   async resolvePath(ownerId: number, elements: string[]): Promise<FileRow | null> {
     // 路径 → 目录行的 colo 级缓存（60s）：桌面端同步、反复进出同一目录时，
-    // 命中就是零往返。代价是改名 / 删除后旧路径最多还能解析 60s —— 目录本身
-    // 还在（只是改名 / 已软删），操作落在同一个 id 上，不产生越权或错数据。
+    // 命中就是零往返。
+    //
+    // ⚠️ 命中必须校验「还挂在树上」（file_children 非 NULL）：Cache API 实测会
+    // 活过声明的 max-age，删掉的目录会从缓存里爬出来 —— 拿它当父目录建文件
+    // 直接外键 500（2026-10-26 实测）。脱离树的行当 miss 并顺手清除；
+    // moveToTrash 会把 file_children 置 NULL，所以删除天然自愈。
     const cacheKey = `dirresolve:${ownerId}:${elements.join('/')}`;
     const hit = await coloCacheGetJson<Record<string, unknown>>(cacheKey, 60);
-    if (hit) return normalizeFile(hit);
+    if (hit) {
+      if (hit.file_children != null) return normalizeFile(hit);
+      void coloCacheDelete(cacheKey);
+    }
 
     let current = await this.ensureRoot(ownerId);
     for (const el of elements) {
@@ -1007,7 +1014,9 @@ export class FileRepo {
       if (!next) return null;
       current = next;
     }
-    void coloCachePutJson(cacheKey, { ...current }, 120);
+    if (current.file_children !== null) {
+      void coloCachePutJson(cacheKey, { ...current }, 120);
+    }
     return current;
   }
 
