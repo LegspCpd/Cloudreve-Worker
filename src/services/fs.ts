@@ -316,25 +316,29 @@ export class FileSystemService {
     // 路径 → 目录行的 colo 级缓存（60s）：这个站的流量稀疏，几乎每个请求都是
     // 新 isolate，进程内缓存不命中，没有这层每次导航都要重走一遍逐段查询。
     //
-    // ⚠️ 命中必须校验「还挂在树上」：**Cache API 实测会活过声明的 max-age**
-    // （2026-10-26：删掉的目录 15 分钟后还能从缓存里解析出来）。脱离树的行
-    // （进了回收站，file_children 被置 NULL）一律当 miss 重查 —— 删除/恢复
-    // 因此天然自愈。符号目录同理不缓存不命中（walk 会抛错，缓存会绕过）。
+    // ⚠️ 两条纪律（都是踩出来的）：
+    //  1. **只缓存目录行**。文件行绝不进缓存 —— overwriteContent 一进来就会
+    //     mustResolve 一次，那时 entity 还没挂上，缓存 60s 会让「PUT 完立刻
+    //     GET」拿到没有 entity 的旧行：DAV GET 404、/file/url 40077，Explorer
+    //     写完就读必踩。文件的解析永远走库。
+    //  2. 命中校验「还挂在树上」+ 是目录：**Cache API 实测会活过声明的
+    //     max-age**（删掉的目录 15 分钟后还能从缓存解析出来）。moveToTrash
+    //     会把 file_children 置 NULL，校验让删除/恢复天然自愈。
     const cacheKey = `dirresolve:${ownerId}:${uri.elements.join('/')}`;
     const hit = await coloCacheGetJson<Record<string, unknown>>(cacheKey, 60);
     if (hit) {
       const row = normalizeFile(hit);
-      if (row.file_children !== null) {
+      if (row.type === FileType.Folder && row.file_children !== null) {
         if (row.is_symbolic) throw Err.symbolicFolder();
         return row;
       }
-      // 脱离树的旧行：当 miss，顺手清掉
+      // 文件行 / 脱离树的旧行：当 miss，顺手清掉
       void coloCacheDelete(cacheKey);
     }
 
     const root = await this.ctx.files.ensureRoot(ownerId);
     const target = await this.walk(root, uri.elements);
-    if (target && target.file_children !== null) {
+    if (target && target.type === FileType.Folder && target.file_children !== null) {
       void coloCachePutJson(cacheKey, { ...target }, 120);
     }
     return target;

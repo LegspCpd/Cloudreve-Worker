@@ -997,14 +997,14 @@ export class FileRepo {
     // 路径 → 目录行的 colo 级缓存（60s）：桌面端同步、反复进出同一目录时，
     // 命中就是零往返。
     //
-    // ⚠️ 命中必须校验「还挂在树上」（file_children 非 NULL）：Cache API 实测会
-    // 活过声明的 max-age，删掉的目录会从缓存里爬出来 —— 拿它当父目录建文件
-    // 直接外键 500（2026-10-26 实测）。脱离树的行当 miss 并顺手清除；
-    // moveToTrash 会把 file_children 置 NULL，所以删除天然自愈。
+    // ⚠️ 只缓存**目录行**（理由见 fs.ts resolveMy 的注释：文件行进缓存会让
+    // 「PUT 完立刻读」拿到没有 entity 的旧行）。命中校验 file_children 非 NULL
+    // （还挂在树上）：Cache API 实测会活过声明的 max-age，删掉的目录会从
+    // 缓存里爬出来 —— 拿它当父目录建文件直接外键 500（2026-10-26 实测）。
     const cacheKey = `dirresolve:${ownerId}:${elements.join('/')}`;
     const hit = await coloCacheGetJson<Record<string, unknown>>(cacheKey, 60);
     if (hit) {
-      if (hit.file_children != null) return normalizeFile(hit);
+      if (Number(hit.type) === 1 && hit.file_children != null) return normalizeFile(hit);
       void coloCacheDelete(cacheKey);
     }
 
@@ -1014,7 +1014,7 @@ export class FileRepo {
       if (!next) return null;
       current = next;
     }
-    if (current.file_children !== null) {
+    if (current.type === 1 && current.file_children !== null) {
       void coloCachePutJson(cacheKey, { ...current }, 120);
     }
     return current;
