@@ -4,7 +4,7 @@
 
 # Cloudreve-Worker
 
-**跑在 Cloudflare Workers 上的 Cloudreve v4 后端 —— 用 TypeScript 重写。**
+**跑在 Cloudflare Workers 上的 Cloudreve v4 前端/后端 —— 用 TypeScript 重写。**
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/LegspCpd/Cloudreve-Worker)
 
