@@ -301,3 +301,7 @@ GPL-3.0。本项目是 [cloudreve/Cloudreve](https://github.com/cloudreve/Cloudr
 
 - [cloudreve/Cloudreve](https://github.com/cloudreve/Cloudreve) —— 上游项目，本项目的行为参照与前端均来自于它
 - [Cloudflare Workers](https://workers.cloudflare.com/) 与 [Neon](https://neon.tech) —— 让这套架构成为可能
+- AI 模型 —— 参与了本项目的代码编写与重构：
+  - Claude Opus 5.5
+  - ChatGPT 5.6 Sol
+  - DeepSeek 4.1 Flash
