@@ -143,6 +143,10 @@ try {
     const r = await app.request('https://dav.test/dav', { method: 'PROPFIND' });
     eq('无凭据 PROPFIND → 401', r.status, 401);
     check('401 必带 WWW-Authenticate', (r.headers.get('www-authenticate') ?? '').startsWith('Basic'));
+    // Windows WebClient 收到 401 会二次探测 DAV / MS-Author-Via 头判定是否为 WebDAV 服务器；
+    // 缺失则静默报「你输入的文件夹似乎无效」且不弹凭据框。这是 Explorer 连不上的头号原因。
+    eq('401 必带 DAV 头', r.headers.get('dav'), '1, 2');
+    eq('401 必带 MS-Author-Via 头', r.headers.get('ms-author-via'), 'DAV');
   }
   {
     const bad = `Basic ${Buffer.from(`${DAV_EMAIL}:wrong`).toString('base64')}`;

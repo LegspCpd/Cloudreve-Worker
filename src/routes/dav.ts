@@ -49,6 +49,24 @@ import { DAV_PREFIX, davChildHref, davHref, resolveDavTarget, safeDecode } from 
 
 export const davRoutes = new Hono<AppBindings>();
 
+/**
+ * 给所有 WebDAV 响应（含 401 质询 / 403 / 404）都带上 `DAV` 与 `MS-Author-Via` 头。
+ *
+ * Windows WebClient(MRxDAV) 的硬要求：它收到 401 后会二次探测这两个头来判定
+ * 「这到底是不是 WebDAV 服务器」。缺了就静默报「你输入的文件夹似乎无效」，
+ * 而且**永远不弹凭据框** —— 表现就是 Explorer 里死活连不上，但 rclone / Android /
+ * 桌面端（直接带凭据、不靠 401 探测）一切正常。上游 `pkg/webdav` 只在 OPTIONS
+ * 的 200 上设这两个头，401 不带，所以 Windows 是 Cloudreve 系的通病。
+ *
+ * 放在鉴权中间件之前：401 由鉴权层提前 return，但头已经在 `c` 上挂好，会随响应发出去
+ * （Hono 的 `c.header()` 在 `c.body()` 之前设置会保留，OPTIONS 处理已验证此模式）。
+ */
+davRoutes.use('*', async (c, next) => {
+  c.header('DAV', '1, 2');
+  c.header('MS-Author-Via', 'DAV');
+  await next();
+});
+
 /** URL 前缀。与上游 `pkg/webdav/webdav.go` 的 `davPrefix` 一致。 */
 
 /** 锁的默认时长（秒），客户端没给 Timeout 时用。 */
