@@ -346,6 +346,104 @@ try {
     '重放后容量包没变',
     Array.isArray(afterReplay.quota_packs) && afterReplay.quota_packs.length === 1,
   );
+
+  // -------------------------------------------------------------------------
+  // [13] 列表与搜索：动态拼接的 SQL、窗口函数分页、ILIKE 转义
+  //
+  // `FileRepo.list` 的 WHERE 是运行时拼的（每加一个过滤条件就往 params 里
+  // push 一个占位符），最容易出现「参数序号错位」这种只在某种组合下才炸的
+  // bug；`searchByName` 的 ILIKE 要给用户输入的 % 和 _ 转义。两条都用真的
+  // Postgres 跑一遍。
+  // -------------------------------------------------------------------------
+  console.log('\n[13] 列表与搜索');
+  const root2 = await filesRepo.create({ type: 1, name: 'list-test', ownerId: uid, parentId: null });
+  const mk = (name, type) =>
+    filesRepo.create({ type, name, ownerId: uid, parentId: root2.id });
+  await mk('文档.txt', 0);
+  await mk('a_b.txt', 0);
+  await mk('axb.txt', 0);
+  await mk('子目录', 1);
+  await mk('另一个目录', 1);
+
+  const baseArgs = { ownerId: null, orderBy: 'name', orderDirection: 'asc' };
+  let r = await filesRepo.list({ ...baseArgs, parentId: root2.id, page: 0, pageSize: 10 });
+  check('按父目录列出全部 5 项', r.files.length === 5 && r.total === 5, `${r.files.length}/${r.total}`);
+  const allFiles = r.files;
+
+  r = await filesRepo.list({
+    ...baseArgs,
+    parentId: root2.id,
+    page: 0,
+    pageSize: 10,
+    typeFilter: 1,
+  });
+  check('只看目录：2 项', r.files.length === 2, String(r.files.length));
+
+  r = await filesRepo.list({
+    ...baseArgs,
+    parentId: root2.id,
+    page: 0,
+    pageSize: 10,
+    nameKeyword: '目录',
+  });
+  check('关键字过滤：2 项', r.files.length === 2, String(r.files.length));
+
+  // 分页：pageSize 2，三页各 2/2/1
+  const pages = [];
+  for (let p = 0; p < 3; p += 1) {
+    const page = await filesRepo.list({
+      ...baseArgs,
+      parentId: root2.id,
+      page: p,
+      pageSize: 2,
+    });
+    pages.push(page.files.length);
+  }
+  check('分页 2/2/1', pages.join(',') === '2,2,1', pages.join(','));
+  const totalOnPage1 = (
+    await filesRepo.list({ ...baseArgs, parentId: root2.id, page: 0, pageSize: 2 })
+  ).total;
+  check('窗口函数给出的是过滤后总数 5', totalOnPage1 === 5, String(totalOnPage1));
+
+  // 空页：已知边界 —— 窗口函数扫不到行时 total 退化成 0
+  const emptyPage = await filesRepo.list({
+    ...baseArgs,
+    parentId: root2.id,
+    page: 9,
+    pageSize: 2,
+  });
+  check('空页返回 0 行', emptyPage.files.length === 0);
+
+  // ILIKE 转义：搜字面量 a_b 不能命中 axb
+  const hitUnder = await filesRepo.searchByName({ ownerId: uid, keyword: 'a_b', offset: 0, limit: 10 });
+  const hitNames = hitUnder.files.map((f) => f.name);
+  check('搜 a_b 命中字面量', hitNames.includes('a_b.txt'), hitNames.join(','));
+  check('搜 a_b 不命中 axb.txt', !hitNames.includes('axb.txt'), hitNames.join(','));
+  check('搜索 total 与实际一致', hitUnder.total === hitUnder.files.length);
+
+  // 回收站：moveToTrash 把 name 换成 uuid 并断开父目录
+  const trashTarget = allFiles.find((f) => f.name === '文档.txt') ?? null;
+  check('完整列表里能找到目标文件', !!trashTarget);
+  if (trashTarget) {
+    await filesRepo.moveToTrash([trashTarget.id]);
+    const trash = await filesRepo.list({
+      ...baseArgs,
+      parentId: null,
+      ownerId: uid,
+      trash: true,
+      page: 0,
+      pageSize: 10,
+    });
+    check('回收站能列出被删项', trash.files.some((f) => f.id === trashTarget.id));
+    const stillThere = await filesRepo.list({
+      ...baseArgs,
+      parentId: root2.id,
+      page: 0,
+      pageSize: 10,
+    });
+    check('原目录里不再列出', !stillThere.files.some((f) => f.id === trashTarget.id));
+    check('目录总数相应减少到 4', stillThere.total === 4, String(stillThere.total));
+  }
 } catch (e) {
   failed += 1;
   console.error('\n  ERROR', e instanceof Error ? e.message : e);

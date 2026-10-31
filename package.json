@@ -41,7 +41,8 @@
     "test:sql-recursive": "node scripts/test-sql-recursive.mjs",
     "test:enc": "node scripts/test-enc-crypto.mjs",
     "test:sql-adapter": "node scripts/test-sql-adapter.mjs",
-    "test:sql-semantics": "node scripts/test-sql-semantics.mjs"
+    "test:sql-semantics": "node scripts/test-sql-semantics.mjs",
+    "test:lib": "node scripts/test-lib.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
