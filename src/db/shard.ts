@@ -114,9 +114,9 @@ export function resolveDb(env: Env): DbHandle {
 
   const backupIndex = 0; // 备库按配置顺序取第一个
   return {
-    sql: sqlForUrl(backups[backupIndex]!, provider),
+    sql: sqlForUrl(backups[backupIndex]!.url, provider),
     index: backupIndex + 1,
-    source: SOURCE_NAMES[backupIndex + 1]!,
+    source: backups[backupIndex]!.name,
     degraded: true,
   };
 }

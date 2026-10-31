@@ -31,6 +31,7 @@ await esbuild.build({
 const U1 = 'postgresql://u:p@ep-one.aws.neon.tech/db?sslmode=require';
 const U2 = 'postgresql://u:p@ep-two.aws.neon.tech/db?sslmode=require';
 const U3 = 'postgresql://u:p@ep-three.aws.neon.tech/db?sslmode=require';
+const U4b = 'postgresql://u:p@ep-four.aws.neon.tech/db?sslmode=require';
 
 console.log('── db/shard.ts 路由 ──');
 
@@ -56,7 +57,7 @@ const setPrimaryDownUntil = async (v) => {
 // 2. 有备库但未开 failover → 仍走主库
 {
   const shard = await fresh();
-  const env = { DATABASE_URL: U1, DATABASE_URL_2: U2 };
+  const env = { DATABASE_URL: U1, DATABASE_URL_4: U4b };
   shard.resetPrimaryHealth();
   const h = shard.resolveDb(env);
   assert.equal(h.index, 0, '未开 DB_FAILOVER 时不该降级');
@@ -66,16 +67,16 @@ const setPrimaryDownUntil = async (v) => {
 // 3. 主库失败 + 开了 failover → 切备库
 {
   const shard = await fresh();
-  const env = { DATABASE_URL: U1, DATABASE_URL_2: U2, DB_FAILOVER: '1' };
+  const env = { DATABASE_URL: U1, DATABASE_URL_4: U4b, DB_FAILOVER: '1' };
   shard.resetPrimaryHealth();
   assert.equal(shard.isDegraded(), false, '初始不该是降级态');
   shard.noteDbFailure(0);
   assert.equal(shard.isDegraded(), true, '主库失败后应进入降级窗口');
   const h = shard.resolveDb(env);
   assert.equal(h.index, 1, '应切到备库，实际 index=' + h.index);
-  assert.equal(h.source, 'DATABASE_URL_2');
+  assert.equal(h.source, 'DATABASE_URL_4');
   assert.equal(h.degraded, true);
-  console.log('  ✓ 主库失败 + DB_FAILOVER=1：切到 DATABASE_URL_2');
+  console.log('  ✓ 主库失败 + DB_FAILOVER=1：切到 DATABASE_URL_4');
 }
 
 // 4. 备库失败不触发降级
@@ -90,7 +91,7 @@ const setPrimaryDownUntil = async (v) => {
 // 5. 主库恢复 → 立刻取消降级
 {
   const shard = await fresh();
-  const env = { DATABASE_URL: U1, DATABASE_URL_2: U2, DB_FAILOVER: '1' };
+  const env = { DATABASE_URL: U1, DATABASE_URL_4: U4b, DB_FAILOVER: '1' };
   shard.resetPrimaryHealth();
   shard.noteDbFailure(0);
   assert.equal(shard.isDegraded(), true);
@@ -109,7 +110,12 @@ const setPrimaryDownUntil = async (v) => {
   // DATABASE_URL_2 与主库重复 → 只保留一次；DATABASE_URL_3 为空 → 跳过；
   // DATABASE_URL_4 是另一个库 → 作为备库保留。故结果是 [U1, U3]。
   assert.deepEqual(urls, [U1, U3], '去重失败：' + JSON.stringify(urls));
-  assert.deepEqual(dbi.backupDatabaseUrls({ DATABASE_URL: U1, DATABASE_URL_2: U2, DATABASE_URL_3: U3 }), [U2, U3]);
+  assert.deepEqual(dbi.backupDatabaseUrls({ DATABASE_URL: U1, DATABASE_URL_2: U2, DATABASE_URL_3: U3 }), []);
+  // _2/_3 被分域占用（audit/metadata），不算备库；_4 开始才是真正的冷备
+  assert.deepEqual(
+    dbi.backupDatabaseUrls({ DATABASE_URL: U1, DATABASE_URL_2: U2, DATABASE_URL_4: U4b }),
+    [{ url: U4b, name: 'DATABASE_URL_4' }],
+  );
   assert.equal(dbi.primaryDatabaseUrl({ DATABASE_URL: U1, DATABASE_URL_2: U2 }), U1);
   console.log('  ✓ 连接串去重 + 空值过滤 + 备库列表');
 }

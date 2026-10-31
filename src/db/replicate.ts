@@ -270,7 +270,7 @@ export async function syncDatabases(env: Env, options: SyncOptions = {}): Promis
 
   const report: SyncReport = {
     primary: primaryUrl ? describeUrl(primaryUrl) : '(未配置)',
-    backups: backupUrls.map(describeUrl),
+    backups: backupUrls.map((b) => `${b.name}(${describeUrl(b.url)})`),
     startedAt,
     finishedAt: startedAt,
     tables: [],
@@ -282,12 +282,12 @@ export async function syncDatabases(env: Env, options: SyncOptions = {}): Promis
 
   const primary = sqlForUrl(primaryUrl);
 
-  for (const [i, backupUrl] of backupUrls.entries()) {
-    log(`→ 同步到备库 ${i + 1}/${backupUrls.length}：${describeUrl(backupUrl)}`);
-    const backup = sqlForUrl(backupUrl);
+  for (const [i, backup] of backupUrls.entries()) {
+    log(`→ 同步到备库 ${i + 1}/${backupUrls.length}（${backup.name}）：${describeUrl(backup.url)}`);
+    const backupSql = sqlForUrl(backup.url);
 
     if (options.verify !== false) {
-      const { missingInBackup } = await verifyTables(primary, backup);
+      const { missingInBackup } = await verifyTables(primary, backupSql);
       if (missingInBackup.length > 0) {
         throw new Error(
           `备库缺少这些表：${missingInBackup.join(', ')}。` +
@@ -302,7 +302,7 @@ export async function syncDatabases(env: Env, options: SyncOptions = {}): Promis
         log(`  - ${table}：按配置跳过`);
         continue;
       }
-      const r = await syncTable(primary, backup, table);
+      const r = await syncTable(primary, backupSql, table);
       report.tables.push(r);
       if (r.skipped) {
         log(`  - ${table}：跳过（${r.skipped}）`);

@@ -264,9 +264,36 @@ export function metadataDomainUrl(env: Env): string | null {
   return domainUrlByName(env, 'DATABASE_URL_3');
 }
 
-/** 冷备连接串（不含主库）。用于全量同步的写入端与故障切换的候选。 */
-export function backupDatabaseUrls(env: Env): string[] {
-  return databaseUrls(env).slice(1);
+/** 一个冷备槽位：连接串 + 它所在的环境变量名（日志与展示用）。 */
+export interface BackupDb {
+  url: string;
+  name: string;
+}
+
+/**
+ * 冷备连接串列表（不含主库，**也不含分域库**）。
+ *
+ * 用于全量同步的写入端与故障切换的候选。
+ *
+ * ⚠️ `_2`/`_3` 被分域占用：audit_logs / metadata 运行时写这两库，自举时把
+ * 主库对应表搬空。它们绝不能进同步/故障切换的备库列表 —— 同步是
+ * 「主库 → 备库」整表 TRUNCATE + COPY，而主库上这两张表是空壳，
+ * 同步一次就把分域库里的真实数据清掉了。真正的冷备从 `DATABASE_URL_4`
+ * 开始配。
+ */
+export function backupDatabaseUrls(env: Env): BackupDb[] {
+  const domains = new Set(
+    [auditDomainUrl(env), metadataDomainUrl(env)].filter((u): u is string => !!u),
+  );
+  const names = new Map<string, string>();
+  for (const name of DB_SECRET_NAMES.slice(1)) {
+    const v = (env as unknown as Record<string, string | undefined>)[name]?.trim();
+    if (v) names.set(v, name);
+  }
+  return databaseUrls(env)
+    .slice(1)
+    .filter((u) => !domains.has(u))
+    .map((u) => ({ url: u, name: names.get(u) ?? 'DATABASE_URL_?' }));
 }
 
 /**
