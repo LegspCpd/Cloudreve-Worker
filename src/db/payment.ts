@@ -199,4 +199,18 @@ export class GiftCodeRepo {
       WHERE id = ${id} AND used_by IS NULL
     `;
   }
+
+  /**
+   * 履行失败时把卡退回可用状态。
+   *
+   * 不能走 `remove()` + `create()`：`remove` 只删「未使用」的卡（此刻卡已被
+   * 标成使用，删不掉），而 `create` 会撞 `gift_codes_code` 唯一索引 ——
+   * 两步都静默失败，用户的卡就没了。直接清使用人即可。
+   */
+  async revert(id: number): Promise<void> {
+    await this.sql`
+      UPDATE gift_codes SET used_by = NULL, used_at = NULL, updated_at = now()
+      WHERE id = ${id}
+    `;
+  }
 }

@@ -144,11 +144,11 @@ export function appContext(): MiddlewareHandler<AppBindings> {
       if (expired) {
         try {
           const repo = new UserRepo(db.sql);
-          const settings = { ...user.settings, group_pack: null };
-          await repo.updateGroup(user.id, pack.prev_group_id);
-          await repo.updateSettings(user.id, settings);
+          // 一条语句清 group_pack + 回退组：不整行覆盖 settings，
+          // 否则会把并发的容量包/积分一起抹掉（这里是每个请求都可能走到的路径）。
+          await repo.clearGroupPack(user.id, pack.prev_group_id);
           user.group_users = pack.prev_group_id;
-          user.settings = settings;
+          user.settings = { ...(user.settings ?? {}), group_pack: null };
           const g = await repo.byIdWithGroup(user.id);
           if (g) {
             user.group = g.group;

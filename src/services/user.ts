@@ -792,23 +792,27 @@ export class UserService {
       logAudit(this.ctx, 'change_nick', user.id, { nick: patch.nick });
     }
 
-    const settings = { ...(user.settings ?? {}) };
-    if (patch.language !== undefined) settings.email_language = patch.language;
-    if (patch.preferred_theme !== undefined) settings.preferred_theme = patch.preferred_theme;
-    if (patch.version_retention !== undefined) settings.version_retention = patch.version_retention;
-    if (patch.version_retention_ext !== undefined) settings.version_retention_ext = patch.version_retention_ext;
-    if (patch.version_retention_max !== undefined) settings.version_retention_max = patch.version_retention_max;
-    if (patch.disable_view_sync !== undefined) settings.disable_view_sync = patch.disable_view_sync;
+    // 只把改动的键合并进去，不整行覆盖 settings —— 后者会把并发写入的
+    // quota_packs（容量包）/ credit（积分）/ group_pack（购买组）一起抹掉。
+    const patch2: Record<string, unknown> = {};
+    const deleteKeys: string[] = [];
+    if (patch.language !== undefined) patch2.email_language = patch.language;
+    if (patch.preferred_theme !== undefined) patch2.preferred_theme = patch.preferred_theme;
+    if (patch.version_retention !== undefined) patch2.version_retention = patch.version_retention;
+    if (patch.version_retention_ext !== undefined) patch2.version_retention_ext = patch.version_retention_ext;
+    if (patch.version_retention_max !== undefined) patch2.version_retention_max = patch.version_retention_max;
+    if (patch.disable_view_sync !== undefined) patch2.disable_view_sync = patch.disable_view_sync;
     if (patch.share_links_in_profile !== undefined) {
-      settings.share_links_in_profile = patch.share_links_in_profile;
+      patch2.share_links_in_profile = patch.share_links_in_profile;
     }
     // 上传策略偏好（自建多策略功能）：hashid 字符串（前端 PolicySwitcher）或
-    // 数字均可；空串 = 清除偏好回落组默认。非法 hashid 显式报 40001（不再
-    // 静默吞掉），越权/不存在的策略由 assertPolicyAllowed 抛 40035。
+    // 数字均可；空串 = 清除偏好回落组默认（要真的删键，不是设 null）。
+    // 非法 hashid 显式报 40001（不再静默吞掉），越权/不存在的策略由
+    // assertPolicyAllowed 抛 40035。
     if (patch.upload_policy_id !== undefined) {
       const raw = patch.upload_policy_id;
       if (raw === null || raw === '') {
-        delete settings.upload_policy_id;
+        deleteKeys.push('upload_policy_id');
       } else {
         const pid =
           typeof raw === 'number' && Number.isFinite(raw)
@@ -818,10 +822,10 @@ export class UserService {
           throw Err.param('Invalid upload_policy_id');
         }
         await this.ctx.assertPolicyAllowed(Number(pid));
-        settings.upload_policy_id = Number(pid);
+        patch2.upload_policy_id = Number(pid);
       }
     }
-    await this.ctx.users.updateSettings(user.id, settings as Record<string, unknown>);
+    await this.ctx.users.patchSettings(user.id, patch2, deleteKeys);
 
     const updated = await this.ctx.users.byId(user.id);
     // 组行不受本次资料修改影响，直接复用请求里已解析的行，省一次查询
@@ -831,20 +835,19 @@ export class UserService {
   /** 固定 / 取消固定侧栏文件。 */
   async pin(uri: string, name: string | undefined, pinned: boolean): Promise<void> {
     const user = this.ctx.requireUser();
-    const settings = { ...(user.settings ?? {}) };
-    const list = settings.pined ?? [];
+    const list = [...((user.settings?.pined as { uri: string; name?: string }[] | undefined) ?? [])];
 
     if (pinned) {
       if (list.some((p) => p.uri === uri)) return;
       list.push({ uri, name });
     } else {
-      settings.pined = list.filter((p) => p.uri !== uri);
-      await this.ctx.users.updateSettings(user.id, settings as Record<string, unknown>);
+      // 只合并 pined 这一个键，不整行覆盖 settings
+      await this.ctx.users.mergeSettings(user.id, {
+        pined: list.filter((p) => p.uri !== uri),
+      });
       return;
     }
-
-    settings.pined = list;
-    await this.ctx.users.updateSettings(user.id, settings as Record<string, unknown>);
+    await this.ctx.users.mergeSettings(user.id, { pined: list });
   }
 
   /** 头像地址。原版支持 gravatar 与本地头像两种。 */

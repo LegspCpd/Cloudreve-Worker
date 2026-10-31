@@ -344,8 +344,9 @@ async function upsertUser(c: Context<AppBindings>, id: number | null) {
   if (body.credit !== undefined) {
     const credit = num(body.credit);
     if (credit < 0) throw Err.param('Credit cannot be negative');
-    const current = (rows[0].settings as Record<string, unknown> | undefined) ?? {};
-    await ctx.users.updateSettings(id, { ...current, credit });
+    // 只改 credit 这一个键：原来的「读整份 settings 再整行写回」会抹掉
+    // 同一时刻用户自己买的容量包/购买组记录。
+    await ctx.users.setCredit(id, credit);
     logAudit(ctx, 'points_change', id, { credit, reason: 'admin_adjust' });
   }
   if (raw.two_fa === 'clear') {

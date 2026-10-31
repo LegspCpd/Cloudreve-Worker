@@ -348,10 +348,111 @@ export class UserRepo {
     await this.touchCache(id);
   }
 
+  /**
+   * 整行覆盖 `settings`。
+   *
+   * ⚠️ **只在调用方持有的是刚读出的完整快照、且没有并发写者时用**。
+   * 这个写法会把读快照之后别人写进去的键一起抹掉 —— `quota_packs`（容量包）
+   * 和 `credit`（积分）都是付费数据，被覆盖就是用户付了钱丢东西。
+   * 改单个/少量键请用 `mergeSettings` / `patchSettings`。
+   */
   async updateSettings(id: number, settings: Record<string, unknown>): Promise<void> {
     await this.sql`
       UPDATE users SET settings = ${JSON.stringify(settings)}::jsonb, updated_at = now()
       WHERE id = ${id}
+    `;
+    await this.touchCache(id);
+  }
+
+  /**
+   * 只合并指定的键（JSONB `||`），不碰其他键。
+   *
+   * 并发安全：两个人同时改不同的键，各自只合并自己那部分，不会互相覆盖。
+   * 注意 `||` 是「同键替换」，数组/对象整体替换，不做深合并。
+   */
+  async mergeSettings(id: number, patch: Record<string, unknown>): Promise<void> {
+    if (Object.keys(patch).length === 0) return;
+    await this.sql`
+      UPDATE users SET settings = COALESCE(settings, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb,
+                       updated_at = now()
+      WHERE id = ${id}
+    `;
+    await this.touchCache(id);
+  }
+
+  /**
+   * 合并 patch 并删除指定键（要「清掉」而不是「设成 null」时用）。
+   *
+   * 对应原来「读整份 settings → delete key → 整行写回」的语义，
+   * 但不覆盖其他键。
+   */
+  async patchSettings(
+    id: number,
+    patch: Record<string, unknown>,
+    deleteKeys: string[] = [],
+  ): Promise<void> {
+    if (Object.keys(patch).length === 0 && deleteKeys.length === 0) return;
+    await this.sql`
+      UPDATE users SET settings = (COALESCE(settings, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb)
+                                   - ${deleteKeys}::text[],
+                       updated_at = now()
+      WHERE id = ${id}
+    `;
+    await this.touchCache(id);
+  }
+
+  /**
+   * 写入「购买的用户组」并同步切组，**一条语句原子完成**。
+   *
+   * `prev_group_id` 用现有记录里的（续费不丢最初组），没有则取当前的
+   * `group_users`（SET 右侧引用的是更新前的值）。原来「先 updateSettings
+   * 整行覆盖、再 updateGroup」两步：既会抹掉并发的容量包/积分，中途失败
+   * 还会出现「买了组但没切组」。
+   */
+  async applyGroupPack(
+    id: number,
+    groupId: number,
+    expireAt: string | null,
+  ): Promise<void> {
+    await this.sql`
+      UPDATE users SET
+        settings = jsonb_set(
+          COALESCE(settings, '{}'::jsonb),
+          '{group_pack}',
+          jsonb_build_object(
+            'group_id', ${groupId}::int,
+            'prev_group_id', COALESCE((settings->'group_pack'->>'prev_group_id')::int, group_users),
+            'expire_at', ${expireAt}::text
+          ),
+          true
+        ),
+        group_users = ${groupId},
+        updated_at = now()
+      WHERE id = ${id}
+    `;
+    await this.touchCache(id);
+  }
+
+  /** 组包过期：清掉记录并回退到购买前的组，一条语句原子完成。 */
+  async clearGroupPack(id: number, prevGroupId: number): Promise<void> {
+    await this.sql`
+      UPDATE users SET
+        settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{group_pack}', 'null'::jsonb, true),
+        group_users = ${prevGroupId},
+        updated_at = now()
+      WHERE id = ${id}
+    `;
+    await this.touchCache(id);
+  }
+
+  /** 把积分设为指定值（管理端修改用；相对增减走 `adjustCredit`）。 */
+  async setCredit(id: number, credit: number): Promise<void> {
+    await this.sql`
+      UPDATE users SET settings = jsonb_set(
+        COALESCE(settings, '{}'::jsonb),
+        '{credit}',
+        to_jsonb(${credit}::numeric)
+      ), updated_at = now() WHERE id = ${id}
     `;
     await this.touchCache(id);
   }

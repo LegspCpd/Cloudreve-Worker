@@ -15,7 +15,7 @@
  * 后接商户密钥（无 &），取 MD5 hex 小写。
  */
 import type { AppContext } from './context';
-import type { OrderRow, UserSetting, VasProductType } from '../db/types';
+import type { OrderRow, VasProductType } from '../db/types';
 import { GiftCodeRepo, OrderRepo } from '../db/payment';
 import { AppError, Err } from '../lib/errors';
 import { md5 } from '../lib/md5';
@@ -231,6 +231,22 @@ export class PaymentService {
       return orderPublic(order); // 未支付成功（如退款/关闭），保持 pending
     }
 
+    // 实付金额必须与订单金额一致。签名虽然覆盖了 money，但这里防的是
+    // 「网关侧改价 / 订单与回调串号」这类不一致 —— 钱对不上就不该发货。
+    if (params.money !== undefined && params.money !== '') {
+      const paidFen = Math.round(Number(params.money) * 100);
+      if (!Number.isFinite(paidFen) || paidFen !== Number(order.amount)) {
+        logAudit(this.ctx, 'payment_fulfill_failed', order.user_id, {
+          order_no: order.order_no,
+          error: `amount mismatch: order ${order.amount} fen, paid ${params.money} yuan`,
+        });
+        throw new AppError(
+          40019,
+          `Paid amount mismatch: order ${order.amount} fen, callback ${params.money} yuan`,
+        );
+      }
+    }
+
     // 原子抢占 pending → paid；抢不到说明另一个回调正在履行
     const claimed = await this.orders.markPaid(order.order_no, params.trade_no ?? null);
     if (!claimed) {
@@ -308,7 +324,6 @@ export class PaymentService {
     const users = this.ctx.users;
     const user = await users.byId(userId);
     if (!user) throw Err.userNotFound();
-    const settings: UserSetting = { ...(user.settings ?? {}) };
     const now = Date.now();
 
     if (productType === 'storage') {
@@ -329,16 +344,11 @@ export class PaymentService {
       const group = await this.ctx.groups.byId(groupId);
       if (!group) throw Err.param('Target group not found');
       const duration = Number(snapshot.duration ?? 0);
-      const existing = settings.group_pack;
-      // 若正在生效购买组，回退基准保持为最初始的组（续费不丢原组）
-      const prevGroupId = existing ? existing.prev_group_id : user.group_users;
-      settings.group_pack = {
-        group_id: groupId,
-        prev_group_id: prevGroupId,
-        expire_at: duration > 0 ? new Date(now + duration * 86400000).toISOString() : null,
-      };
-      await users.updateSettings(userId, settings as Record<string, unknown>);
-      await users.updateGroup(userId, groupId);
+      const expireAt = duration > 0 ? new Date(now + duration * 86400000).toISOString() : null;
+      // 一条语句同时写 settings.group_pack 与 group_users：既不会抹掉并发的
+      // 容量包/积分（原来整行覆盖 settings 会），也不会出现「记了组却没切组」。
+      // prev_group_id 由 SQL 从旧值里取，续费不丢最初组。
+      await users.applyGroupPack(userId, groupId, expireAt);
       logAudit(this.ctx, 'group_changed', userId, { group_id: groupId });
       return;
     }
@@ -368,16 +378,10 @@ export class PaymentService {
     try {
       await this.fulfill(user.id, claimed.product_type, claimed.product_payload ?? {});
     } catch (e) {
-      await this.giftCodes.remove(claimed.id).catch(() => undefined);
-      // remove 是软删未用卡——这里卡已被标使用，直接硬恢复：重新插入等价卡
-      await this.giftCodes
-        .create({
-          code: claimed.code,
-          product_type: claimed.product_type,
-          product_payload: claimed.product_payload ?? {},
-          batch: claimed.batch,
-        })
-        .catch(() => undefined);
+      // 履行失败把卡退回可用状态（清 used_by）。原来走 remove + create：
+      // remove 只删未使用的卡（此刻已标记使用，删不掉），create 会撞 code
+      // 唯一索引，两步都静默失败 → 用户的卡被吞掉。
+      await this.giftCodes.revert(claimed.id).catch(() => undefined);
       throw e;
     }
     return {
