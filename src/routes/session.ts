@@ -2,7 +2,9 @@
  * 会话路由。对应 Cloudreve v4 `routers/router.go` 的 session 分组。
  *
  *   POST   /api/v4/session/token           登录（开了 2FA 时回 203 + 会话 ID）
+ *   POST   /api/v4/session/login           同上（官方桌面端 cloudreve/desktop 走这个路径）
  *   POST   /api/v4/session/token/2fa       用 TOTP 验证码完成登录
+ *   POST   /api/v4/session/2fa            同上（官方桌面端走这个路径）
  *   POST   /api/v4/session/token/refresh   刷新
  *   DELETE /api/v4/session/token           注销
  *   GET    /api/v4/session/prepare         登录前置检查
@@ -23,7 +25,7 @@ import { RATE_LIMITS, clearRateLimit, clientIp, hitRateLimit } from '../lib/rate
 
 export const sessionRoutes = new Hono<AppBindings>();
 
-sessionRoutes.post('/token', async (c) => {
+const handleLogin = async (c: AppRequest) => {
   const ctx = ctxOf(c);
   const body = (await c.req.json().catch(() => ({}))) as {
     email?: string;
@@ -72,7 +74,12 @@ sessionRoutes.post('/token', async (c) => {
   } catch (e) {
     return fail(c, e);
   }
-});
+};
+
+sessionRoutes.post('/token', handleLogin);
+// 官方桌面端（cloudreve/desktop）登录走 `/session/login`；加别名保证桌面客户端能登录，
+// 否则 404 → 拿不到 token → Windows 资源管理器挂载失败。
+sessionRoutes.post('/login', handleLogin);
 
 sessionRoutes.post('/token/refresh', async (c) => {
   const ctx = ctxOf(c);
@@ -194,7 +201,7 @@ sessionRoutes.get('/oidc/info', (c) => {
  * 里挂在 `POST /session/token/2fa`）。会话是登录第一步（密码校验通过）签发的，
  * 校验通过后即失效。
  */
-sessionRoutes.post('/token/2fa', async (c) => {
+const handleLogin2FA = async (c: AppRequest) => {
   const ctx = ctxOf(c);
   const body = (await c.req.json().catch(() => ({}))) as { otp?: string; session_id?: string };
   if (!body.otp || !body.session_id) {
@@ -211,7 +218,11 @@ sessionRoutes.post('/token/2fa', async (c) => {
   } catch (e) {
     return fail(c, e);
   }
-});
+};
+
+sessionRoutes.post('/token/2fa', handleLogin2FA);
+// 桌面端 2FA 完成走 `/session/2fa`（对应上游 v4 的 `/session/token/2fa`）。
+sessionRoutes.post('/2fa', handleLogin2FA);
 /**
  * Passkey 登录：生成断言选项 / 校验断言并签发 token。
  * 对应上游 `session.Group("authn")`（router.go:349-367），
