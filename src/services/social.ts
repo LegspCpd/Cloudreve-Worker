@@ -132,7 +132,16 @@ export async function handleQqCallback(
   const raw = await kvFor(ctx.env, 'session').get(`${STATE_PREFIX}${state}`);
   if (!raw) throw new AppError(CodeParamErr, 'Invalid or expired QQ login state');
   await kvFor(ctx.env, 'session').delete(`${STATE_PREFIX}${state}`); // 一次性
-  const loginState = JSON.parse(raw) as LoginState;
+  let loginState: LoginState;
+  try {
+    loginState = JSON.parse(raw) as LoginState;
+  } catch {
+    throw new AppError(CodeParamErr, 'Invalid or expired QQ login state');
+  }
+  // 旧版本写进去的登录态可能缺 return_to，回落到首页而不是把 undefined 传给前端
+  if (!loginState?.return_to || !loginState.redirect_uri) {
+    throw new AppError(CodeParamErr, 'Invalid or expired QQ login state');
+  }
 
   // --- 1. code 换 access_token（带 fmt=json 让 QQ 返回 JSON 而非 querystring）---
   const tokenBody = new URLSearchParams({

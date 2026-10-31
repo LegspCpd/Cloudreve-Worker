@@ -300,6 +300,10 @@ export class DownloadService {
       } catch {
         throw new AppError(CodeEncryptError, 'Corrupted encryption metadata');
       }
+      // JSON.parse 能返回 null / 数组 / 字符串，后面取字段会抛 TypeError（→ 500）
+      if (!meta || typeof meta !== 'object') {
+        throw new AppError(CodeEncryptError, 'Corrupted encryption metadata');
+      }
       let key: CryptoKey;
       let iv: Uint8Array<ArrayBuffer>;
       try {

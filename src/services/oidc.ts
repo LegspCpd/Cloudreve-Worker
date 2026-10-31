@@ -123,7 +123,15 @@ export async function handleCallback(
   const raw = await kvFor(ctx.env, 'session').get(`${STATE_PREFIX}${state}`);
   if (!raw) throw new AppError(CodeParamErr, 'Invalid or expired OIDC state');
   await kvFor(ctx.env, 'session').delete(`${STATE_PREFIX}${state}`); // 一次性
-  const loginState = JSON.parse(raw) as LoginState;
+  let loginState: LoginState;
+  try {
+    loginState = JSON.parse(raw) as LoginState;
+  } catch {
+    throw new AppError(CodeParamErr, 'Invalid or expired OIDC state');
+  }
+  if (!loginState?.redirect_uri || !loginState.code_verifier || !loginState.nonce) {
+    throw new AppError(CodeParamErr, 'Invalid or expired OIDC state');
+  }
 
   const discovery = await loadDiscovery(ctx, cfg.issuer);
 
