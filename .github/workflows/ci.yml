@@ -111,6 +111,13 @@ jobs:
       - name: SQL 驱动适配层回归
         run: npm run test:sql-adapter
 
+      # 数据库语义回归：用 PGlite（编译成 WASM 的真 Postgres）跑一遍
+      # migrations/*.sql 与那批 JSONB 单语句写路径（mergeSettings /
+      # applyGroupPack / tryDeductCredit / createFoldersIfAbsent 等）。
+      # 这同时验证「非 Neon 的 PostgreSQL 能整体建库」。
+      - name: 数据库语义回归（PGlite）
+        run: npm run test:sql-semantics
+
       - name: 构建 + dry-run 检查（含拉取官方前端）
         run: npm run build
 

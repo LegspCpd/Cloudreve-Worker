@@ -1388,6 +1388,11 @@ export class FileRepo {
    * 注册时给新用户铺「初始文件夹」用：一条 `INSERT ... SELECT ... unnest`
    * 搞定，避免每个目录一次 `childByName` + 一次 `create`（边缘单次往返 ~250ms，
    * 三个目录就是 6 次串行）。
+   *
+   * ⚠️ 必须 `SELECT DISTINCT`：`files` 上有唯一索引
+   * `(file_children, name) WHERE file_children IS NOT NULL`，同一批 names 里
+   * 出现重复会让 `unnest` 产出两行同名，`NOT EXISTS` 在语句快照里看不到
+   * 自己刚插的行 → 两行都插入 → 唯一约束冲突（PGlite 实测）。
    */
   async createFoldersIfAbsent(
     parentId: number,
@@ -1398,9 +1403,9 @@ export class FileRepo {
     await this.sql`
       INSERT INTO files (type, name, owner_id, file_children, size, props)
       SELECT ${1}::int, n, ${ownerId}, ${parentId}, 0, '{}'::jsonb
-      FROM unnest(${names}::text[]) AS n
+      FROM (SELECT DISTINCT unnest(${names}::text[]) AS n) AS uniq
       WHERE NOT EXISTS (
-        SELECT 1 FROM files f WHERE f.file_children = ${parentId} AND f.name = n
+        SELECT 1 FROM files f WHERE f.file_children = ${parentId} AND f.name = uniq.n
       )
     `;
   }

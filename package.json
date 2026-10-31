@@ -40,7 +40,8 @@
     "test:sse": "node scripts/test-sse.mjs",
     "test:sql-recursive": "node scripts/test-sql-recursive.mjs",
     "test:enc": "node scripts/test-enc-crypto.mjs",
-    "test:sql-adapter": "node scripts/test-sql-adapter.mjs"
+    "test:sql-adapter": "node scripts/test-sql-adapter.mjs",
+    "test:sql-semantics": "node scripts/test-sql-semantics.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
@@ -50,7 +51,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260919.0",
-    "@electric-sql/pglite": "^0.5.11",
+    "@electric-sql/pglite": "^0.5.14",
     "typescript": "^5.7.2",
     "wrangler": "^4.135.0"
   },
