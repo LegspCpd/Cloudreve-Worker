@@ -48,9 +48,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * 若直接拿它做校验会把官方客户端全挡掉（曾导致桌面端报「输入参数有误」）。
  *
  * 该函数只用于无法预登记白名单的 auto_provisioned 客户端（官方闭源端 URI 未知），
- * 作为「接受任意回调」之上的最小安全闸门。
+ * 作为「接受任意回调」之上的最小安全闸门；管理端登记客户端白名单时也用它兜住
+ * 明显危险的 scheme（管理面板被 XSS 时少一条路）。
  */
-function assertSafeRedirectUri(uri: string): void {
+export function assertSafeRedirectUri(uri: string): void {
   // 同源相对路径：永远跳不出本站，比任何绝对 URL 都安全。
   if (uri.startsWith('/') && !uri.startsWith('//')) return;
   // `//host/path` 协议相对：会跳到别的主机（且可能是明文 http），明确拒绝。
@@ -328,11 +329,12 @@ export class OAuthService {
     }
 
     // redirect_uri 校验：
-    // - 已登记白名单的客户端（管理员手工登记）必须精确匹配；
-    // - auto_provisioned 客户端（官方闭源端，URI 无法预登记）接受任意，但必须是安全
-    //   scheme（拒绝明文 http 非 localhost、javascript:/data: 等），避免授权码泄露到
-    //   明文链路或被发往危险协议；
-    // - 其余（手动创建却未登记白名单）保持原语义：不校验。
+    // - 已登记白名单的客户端必须精确匹配（仅 IP loopback 放宽端口）；
+    // - auto_provisioned 客户端（官方闭源端，URI 无法预登记）接受任意，但必须
+    //   是安全 scheme（拒绝明文 http 非 localhost、javascript:/data: 等）；
+    // - **白名单为空的手动客户端直接拒绝**：原来这里「保持原语义：不校验」，
+    //   等于接受任意 redirect_uri —— 授权码会被发到攻击者站点（RFC 6749
+    //   §3.1.2.2 要求 redirect_uri 必须预先注册）。
     if (app.redirect_uris.length > 0) {
       // 精确匹配，仅对 IP loopback 放宽端口（CLI/原生客户端回调端口随机）
       if (!app.redirect_uris.some((uri) => redirectURIMatches(uri, args.redirect_uri))) {
@@ -340,6 +342,11 @@ export class OAuthService {
       }
     } else if (app.props.auto_provisioned) {
       assertSafeRedirectUri(args.redirect_uri);
+    } else {
+      throw new AppError(
+        CodeParamErr,
+        'This client has no registered redirect URI; register one before authorizing',
+      );
     }
 
     // 用户点了「拒绝」：按 OAuth2 §4.1.2.1 回 access_denied，

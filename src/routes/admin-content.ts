@@ -30,6 +30,7 @@ import { AppError, CodeFeatureNotEnabled, CodeInvalidActionOnSystemNode, CodeNod
 import { BACKEND_VERSION } from './site';
 import { digestPassword, randomString } from '../lib/crypto';
 import { logAudit } from '../services/audit';
+import { assertSafeRedirectUri } from '../services/oauth';
 import { getSql, type Sql } from '../db';
 import { invalidateNodeCache } from '../db/nodes';
 import { resolveDomainHandle } from '../db/shard';
@@ -1563,6 +1564,10 @@ async function upsertOAuthClient(c: Context<AppBindings>, id: number | null) {
   const name = String(body.name ?? '').trim();
   if (!name) throw Err.param('Name is required');
   const redirectUris = jsonArray(body.redirect_uris).map(String);
+  // 登记白名单时就把危险 scheme 挡掉（javascript:/data:/明文 http 等）。
+  // 授权时虽然只做精确匹配，但白名单本身可以是任意字符串 —— 这里不校验，
+  // 管理面板一旦被 XSS 就能登记一个恶意回调。
+  for (const uri of redirectUris) assertSafeRedirectUri(uri);
   const scopes = jsonArray(body.scopes).map(String);
   const props = (body.props as Record<string, unknown>) ?? {};
   const isEnabled = body.is_enabled !== false;
