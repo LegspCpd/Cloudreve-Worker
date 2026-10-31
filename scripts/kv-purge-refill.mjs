@@ -195,7 +195,9 @@ function listKeys(nsId, prefix) {
   let cursor = null;
   // 硬上限：防止某个前缀下键异常多时无限循环（正常量级远小于此）。
   for (let page = 0; page < 50; page++) {
-    const args = ['kv', 'key', 'list', `--namespace-id=${nsId}`, '--limit=1000'];
+    // ⚠️ 不能传 --limit：wrangler 4 的 kv key list 不认这个参数
+    // （报 Unknown argument: limit），CF API 每页默认就是 1000。
+    const args = ['kv', 'key', 'list', `--namespace-id=${nsId}`];
     if (prefix) args.push(`--prefix=${prefix}`);
     if (cursor) args.push(`--cursor=${cursor}`);
     const r = wrangler(args);
