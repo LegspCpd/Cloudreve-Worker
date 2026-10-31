@@ -2,7 +2,10 @@
 name = "cloudreve-worker"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
-compatibility_flags = ["nodejs_compat"]
+# nodejs_als 显式声明：`db/index.ts` 用 AsyncLocalStorage 做「请求级 PG 连接
+# 作用域」（postgres.js 的 socket 不能跨请求复用）。nodejs_compat 在
+# 2024-09-23 之后已包含它，这里写出来是为了不让这条依赖藏在一个合集标志里。
+compatibility_flags = ["nodejs_compat", "nodejs_als"]
 
 # ---------------------------------------------------------------------------
 # 把 migrations/*.sql 当文本打进包里 —— 首次请求时 Worker 自动建表，

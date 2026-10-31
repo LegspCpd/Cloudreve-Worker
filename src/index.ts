@@ -27,7 +27,7 @@ import { AppError, CodeNotFound, describeError } from './lib/errors';
 import { ensureSettings, loadSettings, prefetchSettings } from './settings/provider';
 import { provision } from './db/provision';
 import { resolveDb } from './db/shard';
-import { getSql } from './db';
+import { closePgScope, createPgScope, enterPgScope, getSql } from './db';
 import { kvFor } from './lib/kvRouter';
 import { warmAllCaches } from './services/cacheWarmer';
 import { ensureDomainShards, } from './db/domainBootstrap';
@@ -123,6 +123,31 @@ const app = new Hono<AppBindings>();
 // ---------------------------------------------------------------------------
 // 全局中间件
 // ---------------------------------------------------------------------------
+
+/**
+ * 请求级数据库作用域（必须是第一个中间件，自举也要查库）。
+ *
+ * postgres.js 建的是 `cloudflare:sockets` 的 TCP 连接，socket 绑定创建它的
+ * 请求的 I/O 上下文；跨请求复用会直接抛 `Cannot perform I/O on behalf of a
+ * different request`。所以连接只能「按请求建、按请求关」：
+ *   - 同一请求内的多次查询复用同一条连接（不然一次请求要握手十几次）；
+ *   - 请求结束在 `waitUntil` 里关闭（不拖慢响应）。
+ *
+ * Neon 用的是 HTTP 驱动，没有连接，作用域对它恒为空。
+ */
+app.use('*', async (c, next) => {
+  const scope = createPgScope();
+  try {
+    await enterPgScope(scope, next);
+  } finally {
+    try {
+      c.executionCtx.waitUntil(closePgScope(scope));
+    } catch {
+      // 没有 executionCtx（直接调 app.fetch 的场景）就地关，不等排队的查询
+      await closePgScope(scope);
+    }
+  }
+});
 
 app.use('*', async (c, next) => {
   // 冷启动自举：自动建表、播种系统组与默认策略、补齐设置表。

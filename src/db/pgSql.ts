@@ -85,8 +85,9 @@ export function buildPgSql(client: PgClient): Sql {
           const rows = await tx.unsafe(q.text, q.values as never[]);
           out.push(rows as unknown as T[]);
         } else {
-          // 不是本客户端的惰性查询（理论上不会发生）：退化为直接执行。
-          out.push((await q) as T[]);
+          // 不是本驱动创建的查询：在这里 `await` 会落到事务**之外**执行，
+          // 静默丢掉原子性。宁可报错，也不要一个假装成功的回滚。
+          throw new Error('sql.transaction() only accepts queries created by the same driver');
         }
       }
       return out;

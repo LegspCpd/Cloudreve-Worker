@@ -10,8 +10,9 @@
  *   1. BIGINT 可能以 **字符串** 返回（避免 JSON 精度丢失）；
  *   2. BYTEA 可能是十六进制字符串（`\x0102`）或 Uint8Array。
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { neon, neonConfig } from '@neondatabase/serverless';
-import { buildPgSql, createPgClient } from './pgSql';
+import { buildPgSql, createPgClient, type PgClient } from './pgSql';
 import type { Env } from '../env';
 
 /**
@@ -121,29 +122,95 @@ const DB_SECRET_NAMES = [
 export const MAX_DATABASES = 5;
 
 /**
- * 每个连接串的客户端缓存。
+ * 长连接客户端缓存（**仅**给 Neon 与 Worker 之外的 CLI 用）。
  *
- * **以连接串为键而不是以 env 为键**：同一个 Worker 进程内会同时持有主库
- * 与备库两个客户端（同步任务），以 env 为键会让它们互相顶掉。
- * `neon()` 每次调用都新建一个查询函数，缓存是为了避免每个请求都重建。
+ * `neon()` 是无状态的 HTTP 驱动，每次查询一次 fetch，缓存它只为少建对象；
+ * `migrate` / `seed` / `db-sync` 这类脚本没有「请求」概念，缓存 TCP 连接也安全。
+ *
+ * ⚠️ **postgres.js 在 Worker 请求内绝不能进这个缓存**：它用的是
+ * `cloudflare:sockets` 的 TCP socket，socket 绑定创建它的那个请求的 I/O 上下文，
+ * 跨请求复用会抛
+ * `Cannot perform I/O on behalf of a different request`
+ * （Cloudflare 官方 troubleshooting 明确列为配置错误）。请求内的 PG 连接走
+ * 下面的 `pgScope`，随请求创建、随请求关闭。
  */
 const clients = new Map<string, Sql>();
 
-/** 取指定连接串的客户端（带缓存）。不做任何可用性判断。 */
+// ---------------------------------------------------------------------------
+// 请求级 PG 作用域
+// ---------------------------------------------------------------------------
+
+/** 一个请求内建立的 PG 连接（同请求内复用，避免一次请求内反复握手）。 */
+export interface PgScope {
+  readonly conns: Map<string, { client: PgClient; sql: Sql }>;
+}
+
+/** 在中间件里为每个请求建一个作用域。 */
+export function createPgScope(): PgScope {
+  return { conns: new Map() };
+}
+
+/** 把后续（含异步）执行绑定到该作用域。 */
+export function enterPgScope<T>(scope: PgScope, fn: () => T): T {
+  return pgScope.run(scope, fn);
+}
+
+/**
+ * 关闭作用域内的全部连接。
+ *
+ * 必须在**同一请求**的 `waitUntil` 里调用（跨请求关闭同样会踩 I/O 上下文限制）。
+ *
+ * ⚠️ **不要用 `timeout: 0`**：`logAudit` 这类审计写走的是 `ctx.waitUntil`，
+ * 请求响应返回后才真正执行查询。立即断开会把它们的 insert 掐掉（只留一行
+ * console.error）。这里用驱动默认的等待窗口，让已发出的查询跑完再断。
+ */
+export async function closePgScope(scope: PgScope): Promise<void> {
+  const all = [...scope.conns.values()];
+  scope.conns.clear();
+  await Promise.allSettled(
+    all.map(({ client }) => {
+      try {
+        return client.end();
+      } catch {
+        return Promise.resolve();
+      }
+    }),
+  );
+}
+
+const pgScope = new AsyncLocalStorage<PgScope>();
+
+/** 取指定连接串的客户端。不做任何可用性判断。 */
 export function sqlForUrl(url: string, provider?: DbProvider): Sql {
+  if (!url) throw new Error('数据库连接串为空');
   const p = provider ?? providerOfUrl(url);
   const key = `${p}\u0000${url}`;
+
+  if (p === 'neon') {
+    // HTTP 驱动，无状态，跨请求复用安全
+    const cached = clients.get(key);
+    if (cached) return cached;
+    installRetryingFetch();
+    const sql = neon(url) as unknown as Sql;
+    clients.set(key, sql);
+    return sql;
+  }
+
+  // postgres.js：socket 绑定请求的 I/O 上下文，必须按请求建、按请求关
+  const scope = pgScope.getStore();
+  if (scope) {
+    const hit = scope.conns.get(key);
+    if (hit) return hit.sql;
+    const client = createPgClient(url);
+    const sql = buildPgSql(client);
+    scope.conns.set(key, { client, sql });
+    return sql;
+  }
+
+  // Worker 之外（migrate / seed / db-sync 等 CLI）：无请求概念，可长连接复用
   const cached = clients.get(key);
   if (cached) return cached;
-  if (!url) throw new Error('数据库连接串为空');
-
-  let sql: Sql;
-  if (p === 'neon') {
-    installRetryingFetch();
-    sql = neon(url) as unknown as Sql;
-  } else {
-    sql = buildPgSql(createPgClient(url));
-  }
+  const sql = buildPgSql(createPgClient(url));
   clients.set(key, sql);
   return sql;
 }
