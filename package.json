@@ -38,7 +38,8 @@
     "test:rate-limit": "node scripts/test-rate-limit.mjs",
     "test:dav-password": "node scripts/test-dav-password.mjs",
     "test:sse": "node scripts/test-sse.mjs",
-    "test:sql-recursive": "node scripts/test-sql-recursive.mjs"
+    "test:sql-recursive": "node scripts/test-sql-recursive.mjs",
+    "test:enc": "node scripts/test-enc-crypto.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",

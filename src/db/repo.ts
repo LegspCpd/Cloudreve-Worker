@@ -116,6 +116,7 @@ export function normalizeFile(r: Record<string, unknown>): FileRow {
     is_symbolic: Boolean(r.is_symbolic),
     props: toJson(r.props, {}),
     storage_policy_files: toNumOrNull(r.storage_policy_files),
+    encrypted: Boolean(r.encrypted),
   };
 }
 
@@ -133,6 +134,7 @@ export function normalizeEntity(r: Record<string, unknown>): EntityRow {
     created_by: toNumOrNull(r.created_by),
     upload_session_id: (r.upload_session_id as string) ?? null,
     recycle_options: toJson(r.recycle_options, {}),
+    enc_meta: (r.enc_meta as string) ?? null,
   };
 }
 
@@ -1242,14 +1244,15 @@ export class FileRepo {
     primaryEntity?: number | null;
     isSymbolic?: boolean;
     props?: FileProps | Record<string, unknown>;
+    encrypted?: boolean;
   }): Promise<FileRow> {
     const rows = (await this.sql`
       INSERT INTO files (type, name, owner_id, file_children, size, storage_policy_files,
-                         primary_entity, is_symbolic, props)
+                         primary_entity, is_symbolic, props, encrypted)
       VALUES (${args.type}, ${args.name}, ${args.ownerId}, ${args.parentId}, ${args.size ?? 0},
               ${args.policyId ?? null}, ${args.primaryEntity ?? null},
               ${args.isSymbolic ?? false},
-              ${JSON.stringify(args.props ?? {})}::jsonb)
+              ${JSON.stringify(args.props ?? {})}::jsonb, ${args.encrypted ?? false})
       RETURNING *
     `) as Record<string, unknown>[];
     return normalizeFile(rows[0]!);
@@ -1287,6 +1290,11 @@ export class FileRepo {
 
   async updateSize(id: number, size: number): Promise<void> {
     await this.sql`UPDATE files SET size = ${size}, updated_at = now() WHERE id = ${id}`;
+  }
+
+  /** 更新文件的「是否加密」标志（新版本覆盖时同步，密钥在实体上）。 */
+  async setEncrypted(id: number, encrypted: boolean): Promise<void> {
+    await this.sql`UPDATE files SET encrypted = ${encrypted}, updated_at = now() WHERE id = ${id}`;
   }
 
   async updatePrimaryEntity(id: number, entityId: number | null): Promise<void> {
@@ -1398,12 +1406,14 @@ export class EntityRepo {
     policyId: number;
     createdBy: number | null;
     uploadSessionId?: string | null;
+    encMeta?: string | null;
   }): Promise<EntityRow> {
     const rows = (await this.sql`
       INSERT INTO entities (type, source, size, reference_count, storage_policy_entities,
-                            created_by, upload_session_id, recycle_options)
+                            created_by, upload_session_id, recycle_options, enc_meta)
       VALUES (${args.type}, ${args.source}, ${args.size}, 1, ${args.policyId},
-              ${args.createdBy}, ${args.uploadSessionId ?? null}, '{}'::jsonb)
+              ${args.createdBy}, ${args.uploadSessionId ?? null}, '{}'::jsonb,
+              ${args.encMeta ?? null})
       RETURNING *
     `) as Record<string, unknown>[];
     return normalizeEntity(rows[0]!);

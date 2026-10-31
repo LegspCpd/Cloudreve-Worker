@@ -20,8 +20,9 @@
 import { AppContext } from './context';
 import { FileSystemService } from './fs';
 import { UploadService } from './upload';
-import type { EntityRow, FileRow, TaskRow } from '../db/types';
+import type { EncryptMetadata, EntityRow, FileRow, TaskRow } from '../db/types';
 import { EntityType, FileType } from '../lib/boolset';
+import { decryptStream, importCtrKey } from '../lib/encCrypto';
 import { AppError, CodeFeatureNotEnabled, Err } from '../lib/errors';
 import { createZipStream, type ZipEntry } from '../lib/zip';
 import {
@@ -712,6 +713,17 @@ export class WorkflowService {
     const content = await this.ctx.driverFor(policy).get(entity.source, null);
     if (!content) {
       throw new AppError(CodeFeatureNotEnabled, `Object of "${file.name}" is missing in storage`);
+    }
+    // 加密实体：打包/压缩进 zip 前先还原明文，否则用户拿到的是密文。
+    if (entity.enc_meta) {
+      let meta: EncryptMetadata;
+      try {
+        meta = JSON.parse(entity.enc_meta) as EncryptMetadata;
+      } catch {
+        throw new AppError(50002, 'Corrupted encryption metadata');
+      }
+      const { key, iv } = await importCtrKey(meta, 'decrypt');
+      return decryptStream(content.body as ReadableStream<Uint8Array>, key, iv);
     }
     return content.body as ReadableStream<Uint8Array>;
   }

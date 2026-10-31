@@ -104,6 +104,8 @@ export interface FileRow {
   is_symbolic: boolean;
   props: FileProps | null;
   storage_policy_files: number | null;
+  /** 文件是否启用客户端加密（展示/下载判定用的轻量标志，密钥在 entities.enc_meta）。 */
+  encrypted?: boolean;
 }
 
 export interface EntityRow {
@@ -119,6 +121,8 @@ export interface EntityRow {
   created_by: number | null;
   upload_session_id: string | null;
   recycle_options: EntityProps | null;
+  /** 该实体内容的加密元数据（base64 JSON：algorithm/key_plain_text/iv），密文密钥仅存本库。 */
+  enc_meta?: string | null;
 }
 
 export interface ShareRow {
@@ -295,6 +299,23 @@ export interface EntityProps {
     key_plain_text?: number[] | string;
     iv: number[] | string;
   };
+}
+
+/** 客户端加密所用算法（对齐上游前端 EncryptionCipher）。 */
+export enum EncryptionCipher {
+  Aes256Ctr = 'aes-256-ctr',
+}
+
+/**
+ * 单文件加密元数据。服务端生成后：
+ *   - 原样回传前端 `EncryptedBlob` 用于客户端加密上传；
+ *   - 落库到 entities.enc_meta（base64 字符串），下载时用来还原明文。
+ * key_plain_text / iv 仅存于本仓库数据库，存储后端只看到密文。
+ */
+export interface EncryptMetadata {
+  algorithm: EncryptionCipher;
+  key_plain_text: string; // base64
+  iv: string; // base64
 }
 
 export interface TaskPublicState {

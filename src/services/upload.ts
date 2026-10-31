@@ -16,7 +16,14 @@ import { logAudit } from './audit';
 import { FileSystemService } from './fs';
 import { generateSavePath } from './savepath';
 import { FileSystemType, URI, validateName } from './uri';
-import type { EntityRow, FileRow, StoragePolicyRow, UserWithGroup } from '../db/types';
+import {
+  EncryptionCipher,
+  type EncryptMetadata,
+  type EntityRow,
+  type FileRow,
+  type StoragePolicyRow,
+  type UserWithGroup,
+} from '../db/types';
 import { EntityType, FileType, PolicyType } from '../lib/boolset';
 import {
   AppError,
@@ -37,6 +44,7 @@ import {
   Err,
 } from '../lib/errors';
 import { randomString, timingSafeEqual, uuidv4 } from '../lib/crypto';
+import { encryptStream, importCtrKey, randomEncryptMetadata } from '../lib/encCrypto';
 import { extOf } from './savepath';
 import { isRelayEnabled, type UploadedPart, type UploadSession } from '../storage/types';
 import { publish } from './events';
@@ -53,6 +61,8 @@ export interface CreateUploadSessionParams {  uri: string;
   policyId?: string;
   metadata?: Record<string, string>;
   entityType?: string;
+  /** 前端声明的可用加密算法（对应上游 UploadSessionRequest.encryption_supported）。 */
+  encryptionSupported?: string[];
 }
 
 export interface UploadSessionResponse {
@@ -72,7 +82,8 @@ export interface UploadSessionResponse {
   callback?: string;
   mime_type?: string;
   upload_policy?: string;
-  encrypt_metadata?: unknown;
+  /** 客户端加密：前端据此用 EncryptedBlob 流式加密后再上传（对齐上游 EncryptMetadata）。 */
+  encrypt_metadata?: EncryptMetadata;
 }
 
 export class UploadService {
@@ -159,12 +170,38 @@ export class UploadService {
       originPath: this.dirPathOf(parentUri),
     });
 
+    // 客户端加密：策略开启 encryption 且前端声明支持 AES-256-CTR 时，生成每文件
+    // 随机密钥 + IV，回传前端供 EncryptedBlob 流式加密（密文才落存储）；
+    // 同一份密钥材料落 entities.enc_meta，下载时据此还原明文。
+    // 密钥只存本仓库数据库，与存储后端（OneDrive/S3/R2）分离，存储方读不到明文。
+    // ⚠️ 必须与前端触发条件一致：上游 `base.ts` 只在非 relay 策略下才把文件包成
+    // EncryptedBlob（relay 走 Worker 中转，不加密）。若这里对 relay 也生成密钥并
+    // 标记加密，下载端会把明文当密文解 → 乱码。所以 relay 策略一律不加密。
+    const policyRelay =
+      policy.settings?.relay === true ||
+      policy.type === PolicyType.Upyun ||
+      (policy.type === PolicyType.S3 && !policy.access_key);
+    let encryptMeta: EncryptMetadata | undefined;
+    const wantsEncryption =
+      !policyRelay &&
+      policy.settings?.encryption === true &&
+      Array.isArray(params.encryptionSupported) &&
+      params.encryptionSupported.includes(EncryptionCipher.Aes256Ctr);
+    if (wantsEncryption) {
+      encryptMeta = randomEncryptMetadata();
+    }
+    const encMetaJson = encryptMeta ? JSON.stringify(encryptMeta) : null;
+
     // 目标文件行：已存在则复用（新增版本），否则先建占位
     let fileRow: FileRow;
     let newFileCreated: boolean;
     if (existing) {
       fileRow = existing;
       newFileCreated = false;
+      // 新版本改用（或去掉）加密时，同步文件的加密标志
+      if (Boolean(existing.encrypted) !== Boolean(encryptMeta)) {
+        await this.ctx.files.setEncrypted(existing.id, Boolean(encryptMeta));
+      }
     } else {
       fileRow = await this.ctx.files.create({
         type: FileType.File,
@@ -173,6 +210,7 @@ export class UploadService {
         parentId: parent.id,
         size: params.size,
         policyId: policy.id,
+        encrypted: Boolean(encryptMeta),
       });
       newFileCreated = true;
     }
@@ -185,6 +223,7 @@ export class UploadService {
       policyId: policy.id,
       createdBy: user.id,
       uploadSessionId: sessionId,
+      encMeta: encMetaJson,
     });
 
     const expireAt = Date.now() + this.ctx.settings.uploadSessionTTL * 1000;
@@ -219,11 +258,18 @@ export class UploadService {
     // driver 可能在 token 阶段决定分片大小与 uploadId，回写到会话
     session.chunkSize = credential.chunk_size;
 
+    // 加密上传：强制分片大小为 16 的倍数。前端按 chunk_size 切片加密，
+    // 只有当每片起点都落在 AES 块边界上时，其效果才等价于单流 AES-CTR；
+    // 否则密文无法按单流解密。常规驱动 (5/10 MiB) 本来就对齐，这里只作兜底。
+    if (encryptMeta && session.chunkSize > 0 && session.chunkSize % 16 !== 0) {
+      session.chunkSize = Math.max(16, Math.floor(session.chunkSize / 16) * 16);
+    }
+
     await this.saveSession(session);
 
     const response: UploadSessionResponse = {
       session_id: sessionId,
-      chunk_size: credential.chunk_size,
+      chunk_size: session.chunkSize,
       expires: credential.expires,
       uri: uri.toString(),
       callback_secret: callbackSecret,
@@ -236,6 +282,8 @@ export class UploadService {
     if (credential.keyTime) response.keyTime = credential.keyTime;
     if (credential.credential) response.credential = credential.credential;
     if (params.mimeType) response.mime_type = params.mimeType;
+    // 客户端加密：前端拿到后把文件流包成 EncryptedBlob 再分片上传
+    if (encryptMeta) response.encrypt_metadata = encryptMeta;
 
     // OneDrive 直传的收尾回调地址。原版由驱动自己拼（`onedrive.go:167` 调
     // `routes.MasterSlaveCallbackUrl(siteURL, PolicyTypeOd, sessionID, CallbackSecret)`），
@@ -634,23 +682,51 @@ export class UploadService {
       originPath: this.dirPathOf(uri.parent()),
     });
 
+    // 覆盖写要保持加密，两种情形都要覆盖到：
+    //   1. 原文件已是加密实体（prevEntity.enc_meta）—— 不能编辑一次就降级成明文；
+    //   2. 策略开启了 encryption（但非 relay）—— 在加密策略上新建的空文件
+    //      （POST /file/create 无实体）首次保存时也要加密。
+    // 做法：为本次新版本生成新密钥，把编辑器 / WebDAV 送来的明文流在 Worker 内
+    // 加密后再落存储，密钥记到新实体上。
+    const prevEntity = file.primary_entity
+      ? await this.ctx.entities.byId(file.primary_entity)
+      : null;
+    const editPolicyRelay =
+      policy.settings?.relay === true ||
+      policy.type === PolicyType.Upyun ||
+      (policy.type === PolicyType.S3 && !policy.access_key);
+    const shouldEncrypt =
+      !!prevEntity?.enc_meta || (policy.settings?.encryption === true && !editPolicyRelay);
+    let encMetaJson: string | null = null;
+    let putBody = body;
+    if (shouldEncrypt) {
+      const meta = randomEncryptMetadata();
+      encMetaJson = JSON.stringify(meta);
+      const { key, iv } = await importCtrKey(meta, 'encrypt');
+      putBody = encryptStream(body, key, iv);
+    }
+
     const entity = await this.ctx.entities.create({
       type: EntityType.Version,
       source: savePath,
       size: length,
       policyId: policy.id,
       createdBy: user.id,
+      encMeta: encMetaJson,
     });
 
     await driver.put(
       { savePath, fileName: file.name, size: length, mimeType, overwrite: false },
-      body,
+      putBody,
       length,
     );
 
     await this.ctx.entities.linkFile(file.id, entity.id);
     await this.ctx.files.updatePrimaryEntity(file.id, entity.id);
     await this.ctx.files.updateSize(file.id, length);
+    if (Boolean(file.encrypted) !== Boolean(encMetaJson)) {
+      await this.ctx.files.setEncrypted(file.id, Boolean(encMetaJson));
+    }
 
     // 容量记账同样走原子预占（并发保存不会一起突破配额）。
     // 失败要回滚上面三步：没记上容量就不能把新内容当成主版本。

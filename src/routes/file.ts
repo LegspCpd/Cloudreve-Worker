@@ -31,7 +31,8 @@ import { fail, ok } from '../lib/response';
 import { kvFor } from '../lib/kvRouter';
 import { edgeCacheMatch, edgeCachePut } from '../lib/edgeCache';
 import type { AppContext } from '../services/context';
-import type { FileRow } from '../db/types';
+import type { EncryptMetadata, FileRow } from '../db/types';
+import { decryptFull, importCtrKey } from '../lib/encCrypto';
 import { AppContext as AppContextClass } from '../services/context';
 import { FileSystemService } from '../services/fs';
 import { parseFileViewers } from '../settings/fileViewers';
@@ -677,6 +678,8 @@ fileRoutes.put('/upload', async (c) => {
     policy_id?: string;
     metadata?: Record<string, string>;
     entity_type?: string;
+    /** 客户端声明的加密算法能力（对齐上游 UploadSessionRequest）。 */
+    encryption_supported?: string[];
   };
   if (!body.uri) return fail(c, Err.param('uri is required'));
 
@@ -691,6 +694,7 @@ fileRoutes.put('/upload', async (c) => {
       policyId: body.policy_id,
       metadata: body.metadata,
       entityType: body.entity_type,
+      encryptionSupported: body.encryption_supported,
     });
     return ok(c, res);
   } catch (e) {
@@ -962,7 +966,28 @@ fileRoutes.get('/archive', async (c) => {
     if (!policy) throw Err.policyNotAllowed();
     const driver = ctx.driverFor(policy);
 
+    // 加密 ZIP：中心目录的多次 Range 读取都基于明文，这里一次性解密并缓存，
+    // 后续按区间切片即可（避免每个 Range 都把整包拉一遍）。
+    let plainCache: Uint8Array<ArrayBuffer> | null = null;
+    let encMeta: EncryptMetadata | null = null;
+    if (entity.enc_meta) {
+      try {
+        encMeta = JSON.parse(entity.enc_meta) as EncryptMetadata;
+      } catch {
+        throw new AppError(50002, 'Corrupted encryption metadata');
+      }
+    }
+
     const read: RangeReader = async (start, end) => {
+      if (encMeta) {
+        if (!plainCache) {
+          const full = await driver.get(entity.source, null);
+          if (!full?.body) throw new ZipError('Failed to read encrypted archive');
+          const { key, iv } = await importCtrKey(encMeta, 'decrypt');
+          plainCache = await decryptFull(full.body as ReadableStream<Uint8Array>, key, iv);
+        }
+        return plainCache.slice(start, end + 1);
+      }
       const content = await driver.get(entity.source, `bytes=${start}-${end}`);
       if (!content) throw new ZipError(`Failed to read range ${start}-${end}`);
       return drain(content.body as ReadableStream<Uint8Array>);

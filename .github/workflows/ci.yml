@@ -101,6 +101,11 @@ jobs:
       - name: 递归路径 SQL 回归
         run: npm run test:sql-recursive
 
+      # 文件加密原语（AES-256-CTR）回归：守「前端块对齐分片加密 == 单流」与
+      # 「后端任意块边界流式解密能还原」这两条 —— 它们是加密文件能否下载的底线。
+      - name: 文件加密原语回归
+        run: npm run test:enc
+
       - name: 构建 + dry-run 检查（含拉取官方前端）
         run: npm run build
 

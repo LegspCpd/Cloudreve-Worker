@@ -15,8 +15,9 @@ import { AppContext } from './context';
 import { logAudit } from './audit';
 import { FileSystemService, type DirectLinkInfo } from './fs';
 import { FileSystemType, URI } from './uri';
-import type { EntityRow, FileRow } from '../db/types';
+import { type EncryptMetadata, type EntityRow, type FileRow } from '../db/types';
 import { FileType } from '../lib/boolset';
+import { decryptFull, decryptStream, importCtrKey } from '../lib/encCrypto';
 import {
   AppError,
   CodeFileNotFound,
@@ -75,6 +76,22 @@ export const DIRECT_LINK_PREFIX = '/f';
  * 首个 entity。下载请求不走这条（没有内容可下，照旧报错）。
  */
 const EMPTY_CONTENT_URL = 'data:text/plain;charset=utf-8,';
+
+// ---------------------------------------------------------------------------
+// 客户端加密的解密原语见 lib/encCrypto.ts（与前端 EncryptedBlob 的 AES-256-CTR 对称）
+// ---------------------------------------------------------------------------
+
+/** 解析 Range 请求头中的 start/end（闭区间，end 缺省为文件末尾）。 */
+function parseRangeStartEnd(range: string, totalSize: number): { start: number; end: number } | null {
+  const m = /^bytes=(\d+)-(\d*)$/i.exec(range.trim());
+  if (!m) return null;
+  const start = Number(m[1]);
+  const end = m[2] ? Number(m[2]) : totalSize - 1;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start || start >= totalSize) {
+    return null;
+  }
+  return { start, end: Math.min(end, totalSize - 1) };
+}
 
 export class DownloadService {
   constructor(
@@ -141,7 +158,8 @@ export class DownloadService {
         driver.settings?.stream_saver !== true;
 
       let url: string;
-      if (!caps.proxyRequired && !proxyForFilename) {
+      // 加密文件必须走本站代理：直链拿到的是存储里的密文，浏览器无法自行解密。
+      if (!file.encrypted && !caps.proxyRequired && !proxyForFilename) {
         // 驱动可直链
         url = await driver.source(entity.source, {
           expire: expiresAt > 0 ? expiresAt * 1000 : undefined,
@@ -246,8 +264,9 @@ export class DownloadService {
     if (!policy) throw Err.policyNotAllowed();
     const driver = this.ctx.driverFor(policy);
 
+    // 加密实体不解密后写边缘缓存：缓存里必须是密文，明文不能落在 CDN。
     const cacheable =
-      !!edgeCache && !range && policy.settings?.edge_cache === true;
+      !!edgeCache && !range && policy.settings?.edge_cache === true && !entity.enc_meta;
     const cacheKey = `/__edge_cache__/content/${entityHashId}/${encodeURIComponent(name)}`;
 
     if (cacheable) {
@@ -258,6 +277,40 @@ export class DownloadService {
     const content = await driver.get(entity.source, range ?? null);
     if (!content) throw new AppError(CodeFileNotFound, 'Object not found in storage backend');
     void name;
+
+    // 客户端加密实体：存储里是密文，这里还原成明文再返回（下载/预览无感）。
+    if (entity.enc_meta) {
+      let meta: EncryptMetadata;
+      try {
+        meta = JSON.parse(entity.enc_meta) as EncryptMetadata;
+      } catch {
+        throw new AppError(50002, 'Corrupted encryption metadata');
+      }
+      let key: CryptoKey;
+      let iv: Uint8Array<ArrayBuffer>;
+      try {
+        ({ key, iv } = await importCtrKey(meta, 'decrypt'));
+      } catch (e) {
+        throw new AppError(50002, e instanceof Error ? e.message : 'Corrupted encryption metadata');
+      }
+      if (range) {
+        // Range 请求：AES-CTR 需要从对象起点算计数器，先取全量解密再切片。
+        const full = await driver.get(entity.source, null);
+        if (!full?.body) throw new AppError(CodeFileNotFound, 'Object not found in storage backend');
+        const plain = await decryptFull(full.body as ReadableStream<Uint8Array>, key, iv);
+        const win = parseRangeStartEnd(range, plain.byteLength);
+        if (!win) throw new AppError(416, 'Requested range not satisfiable');
+        const slice = plain.slice(win.start, win.end + 1);
+        return {
+          ...content,
+          body: new Response(slice).body as ReadableStream<Uint8Array>,
+          size: slice.byteLength,
+          contentRange: `bytes ${win.start}-${win.end}/${plain.byteLength}`,
+        };
+      }
+      if (!content.body) return content;
+      return { ...content, body: decryptStream(content.body as ReadableStream<Uint8Array>, key, iv) };
+    }
 
     // 回源成功且是完整 200 内容 → 后台写入边缘缓存（tee 出一路流，不影响本次响应）
     if (cacheable && !content.contentRange && content.body) {
@@ -284,6 +337,10 @@ export class DownloadService {
   async thumb(uri: URI): Promise<{ url: string; expires: string | null }> {
     const file = await this.fs.mustResolve(uri);
     if (file.type !== FileType.File || !file.primary_entity) {
+      return { url: '', expires: null };
+    }
+    // 加密文件不生成缩略图：存储后端里的密文无法被原生缩略图/Image Resizing 解码。
+    if (file.encrypted) {
       return { url: '', expires: null };
     }
     const entity = await this.ctx.entities.byId(file.primary_entity);
@@ -397,7 +454,7 @@ export class DownloadService {
 
     await this.ctx.directLinks.incrementDownloads(id);
 
-    if (!caps.proxyRequired) {
+    if (!file.encrypted && !caps.proxyRequired) {
       return driver.source(entity.source, {
         isDownload: true,
         displayName: file.name,

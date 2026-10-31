@@ -159,6 +159,8 @@ export interface FileResponse {
   primary_entity?: string;
   folder_summary?: FolderSummary;
   extended_info?: ExtendedInfo;
+  /** 文件加密算法（有值表示启用了客户端加密，前端据此展示锁标）。 */
+  encrypted_with?: string;
 }
 
 export interface FolderSummary {
@@ -642,6 +644,10 @@ export class FileSystemService {
 
     if (file.primary_entity && file.type === FileType.File) {
       res.primary_entity = this.ctx.codec.encodeEntityID(file.primary_entity);
+    }
+    if (file.encrypted) {
+      // 客户端加密标志（算法固定 AES-256-CTR，密钥在实体 enc_meta，不下发前端）
+      res.encrypted_with = 'aes-256-ctr';
     }
 
     // 目录自定义视图（`props.view`）只在 `extended_info` 里下发，与列表响应一致；
@@ -1269,6 +1275,9 @@ export class FileSystemService {
       policyId: policy.id,
       primaryEntity: null,
       props: src.props ?? {},
+      // 复制复用同一批实体（enc_meta 跟着实体走），加密标志也要一起继承，
+      // 否则副本会被当成未加密文件，下载时可能直接给存储直链（拿到密文）。
+      encrypted: src.encrypted,
     });
 
     if (src.type === FileType.File && src.primary_entity) {

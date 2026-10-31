@@ -87,7 +87,7 @@ import { isSocialMediaBot, renderSharePreview } from './services/share-preview';
  * （踩过：加了 site_state / rate_limits 两张表没 bump，线上一直「表不存在」，
  * 限速静默失效、注册也会挂在 claimFirstAdmin 上）。
  */
-const BOOTSTRAP_FLAG = 'bootstrap:done:v17';
+const BOOTSTRAP_FLAG = 'bootstrap:done:v18';
 /** 自举失败后的冷却键（20 秒 TTL）：期间请求直接快速失败，不再重放自举。 */
 const BOOTSTRAP_COOLDOWN = 'bootstrap:cooldown:v1';
 /** 同一 isolate 内的并发请求共享一次自举。 */
