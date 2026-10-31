@@ -15,11 +15,19 @@
  *      → 取 userinfo → 按 (issuer, sub) 查找绑定 → 命中则登录；
  *      未命中且允许自动注册则建号并绑定；否则报 CodeOpenIDNotLinked
  *
- * 安全：state / nonce / code_verifier 均存 KV 且一次性消费；PKCE 走 S256；
- * id_token 的 iss / aud / exp 均校验；nonce 必须与 KV 中的一致（防重放）。
+ * 安全边界（**如实说明，不要按标准 OIDC RP 的期望来读**）：
+ *   - state / code_verifier 存 KV，用一次即删；PKCE 走 S256；
+ *   - id_token **不验签**，也不校验 iss / aud / exp。信任基础是「id_token 由
+ *     token 端点通过 HTTPS 直接返回」，而不是 JWT 自身的签名链。所以**不要把
+ *     userinfo_endpoint 指向不可信的第三方**；
+ *   - userinfo 是唯一的身份数据源（sub / email），id_token 只用来比 nonce；
+ *   - nonce 只在 id_token 带了这个字段时才校验（部分 IdP 在 code flow 里不返）。
+ *
+ * 要做成「不依赖 TLS 的严格 RP」，得引入 JWKS 拉取 + RS256 验签 + iss/aud/exp
+ * 校验，那是另一档工作量，当前未做。
  */
 import { getSql } from '../db';
-import { AppError, CodeOpenIDNotLinked, CodeParamErr } from '../lib/errors';
+import { AppError, CodeOpenIDNotLinked, CodeParamErr, CodeUserBaned } from '../lib/errors';
 import { randomString, timingSafeEqual } from '../lib/crypto';
 import { logAudit } from './audit';
 import { AppContext } from './context';
@@ -179,14 +187,12 @@ export async function handleCallback(
     (email ? email.split('@')[0] : '') ||
     `oidc_${subject.slice(0, 8)}`;
 
-  const sql = getSql(ctx.env);
-
   // --- 4. 查绑定 ---
   const bound = await findBinding(ctx, issuer, subject);
   if (bound) {
     const user = await ctx.users.byId(bound.user_id);
     if (!user) throw new AppError(CodeOpenIDNotLinked, 'Bound user not found');
-    if (user.status !== 'active') throw new AppError(40084, 'Account is not active');
+    if (user.status !== 'active') throw new AppError(CodeUserBaned, 'Account is not active');
     await touchBinding(ctx, issuer, subject);
     await ctx.files.ensureRoot(user.id);
     logOidcLogin(ctx, user.id, issuer, subject);
@@ -201,7 +207,7 @@ export async function handleCallback(
   if (email && emailVerified) {
     const existing = await ctx.users.byEmail(email);
     if (existing) {
-      if (existing.status !== 'active') throw new AppError(40084, 'Account is not active');
+      if (existing.status !== 'active') throw new AppError(CodeUserBaned, 'Account is not active');
       // 邮箱已存在 → 视为同一人，直接绑定（避免重复建号）
       await insertBinding(ctx, existing.id, issuer, subject, email);
       await ctx.files.ensureRoot(existing.id);

@@ -95,6 +95,7 @@ import {
   CodePurchaseRequired,
   CodeRootProtected,
   CodeSaveOwnShare,
+  CodeTooManyUris,
   Err,
 } from '../lib/errors';
 import { whitelist } from '../db/repo';
@@ -1259,6 +1260,47 @@ export class FileSystemService {
    * 递归复制。文件共享实体（引用计数 +1），目录递归下去。
    * 这与原版的行为一致：复制不产生新的物理对象，只增加实体引用。
    */
+  /**
+   * 分页遍历目录下的**全部**子项。
+   *
+   * 原来复制/转移都是 `list({ pageSize: 10000 })` 一次取完 —— 超过一万个子项
+   * 的部分被静默丢掉，用户以为复制完了，实际少了一半。
+   *
+   * 单次边缘请求注定跑不完超大目录，所以设了总量上限并显式报错：
+   * 报错让用户分批操作，比默默漏文件强。
+   */
+  private async eachChild(
+    parentId: number,
+    fn: (child: FileRow) => Promise<void>,
+    max = 5000,
+  ): Promise<void> {
+    const PAGE = 500;
+    let page = 0;
+    let seen = 0;
+    for (;;) {
+      const children = await this.ctx.files.list({
+        parentId,
+        ownerId: null,
+        page,
+        pageSize: PAGE,
+        orderBy: 'name',
+        orderDirection: 'asc',
+      });
+      for (const child of children.files) {
+        seen += 1;
+        if (seen > max) {
+          throw new AppError(
+            CodeTooManyUris,
+            `目录子项超过 ${max} 个，单次操作无法完成，请分批处理`,
+          );
+        }
+        await fn(child);
+      }
+      if (children.files.length < PAGE) break;
+      page += 1;
+    }
+  }
+
   private async copyRecursive(
     src: FileRow,
     dstParentId: number,
@@ -1290,17 +1332,10 @@ export class FileSystemService {
     }
 
     if (src.type === FileType.Folder) {
-      const children = await this.ctx.files.list({
-        parentId: src.id,
-        ownerId: null,
-        page: 0,
-        pageSize: 10000,
-        orderBy: 'name',
-        orderDirection: 'asc',
-      });
-      for (const child of children.files) {
+      // 分页遍历：一次 pageSize:10000 会把超出部分静默漏掉
+      await this.eachChild(src.id, async (child) => {
         await this.copyRecursive(child, created.id, ownerId);
-      }
+      });
     }
 
     return created;
@@ -1351,17 +1386,8 @@ export class FileSystemService {
 
   private async transferOne(file: FileRow, newPolicy: StoragePolicyRow, uid: number): Promise<void> {
     if (file.type === FileType.Folder) {
-      const children = await this.ctx.files.list({
-        parentId: file.id,
-        ownerId: null,
-        page: 0,
-        pageSize: 10000,
-        orderBy: 'name',
-        orderDirection: 'asc',
-      });
-      for (const child of children.files) {
-        await this.transferOne(child, newPolicy, uid);
-      }
+      // 分页遍历：一次 pageSize:10000 会把超出部分静默漏掉
+      await this.eachChild(file.id, (child) => this.transferOne(child, newPolicy, uid));
       // 目录本身只改「默认策略绑定」，不持有物理对象
       await this.ctx.files.updateStoragePolicy(file.id, newPolicy.id);
       return;
