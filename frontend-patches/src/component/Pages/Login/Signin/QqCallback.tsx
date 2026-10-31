@@ -39,8 +39,10 @@ const QqCallback = () => {
 
     dispatch(sendQqCallback({ code, state }))
       .then((res) => {
-        // refreshUserSession 内部会写入会话并跳转到 /home
-        dispatch(refreshUserSession(res, "/home"));
+        // 后端把发起登录时的 ?redirect= 原样带回（已校验为站内相对路径），
+        // 没有就回首页 —— 之前固定 /home，用户在分享页点登录会被踢回首页。
+        const to = res?.return_to && res.return_to.startsWith("/") ? res.return_to : "/home";
+        dispatch(refreshUserSession(res, to));
       })
       .catch((e: unknown) => {
         setError(e instanceof Error ? e.message : String(e));

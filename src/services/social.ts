@@ -27,7 +27,7 @@
  * client_secret 换 token），不需要 PKCE（QQ 互联授权码流程不支持 PKCE）。
  */
 import { getSql } from '../db';
-import { AppError, CodeOpenIDNotLinked, CodeParamErr } from '../lib/errors';
+import { AppError, CodeOpenIDNotLinked, CodeParamErr, CodeUserBaned } from '../lib/errors';
 import { randomString } from '../lib/crypto';
 import { logAudit } from './audit';
 import { AppContext } from './context';
@@ -205,8 +205,10 @@ export async function handleQqCallback(
   if (bound) {
     const user = await ctx.users.byId(bound.userId);
     if (!user) throw new AppError(CodeOpenIDNotLinked, 'Bound user not found');
-    if (user.status !== 'active') throw new AppError(40084, 'Account is not active');
-    await repo.touch('qq', openid);
+    if (user.status !== 'active') throw new AppError(CodeUserBaned, 'Account is not active');
+    // 用绑定里存的 provider_user_id 而不是本次的 openid：unionid 兜底命中时
+    // 两者可能不同（用户换了 QQ 应用），按本次 openid 更新会一行都改不到。
+    await repo.touch('qq', bound.providerUserId);
     await ctx.files.ensureRoot(user.id);
     logAudit(ctx, 'user_login', user.id, { provider: 'qq', openid });
     return { user, returnTo: loginState.return_to, isNew: false };
@@ -222,13 +224,22 @@ export async function handleQqCallback(
   const syntheticEmail = `qq_${openid}@${host}`;
 
   const groupId = (await ctx.users.isEmpty()) ? 1 : ctx.settings.defaultGroupId;
-  const user = await ctx.users.create({
-    email: syntheticEmail,
-    nick: nickname,
-    passwordDigest: null, // 社交登录用户无本地密码
-    groupId,
-    status: 'active',
-  });
+  let user: UserRow;
+  try {
+    user = await ctx.users.create({
+      email: syntheticEmail,
+      nick: nickname,
+      passwordDigest: null, // 社交登录用户无本地密码
+      groupId,
+      status: 'active',
+    });
+  } catch (e) {
+    // 并发回调（用户连点、或同一次授权被重放两次）：另一个请求已经把账号
+    // 建出来了，邮箱唯一约束会在这里炸。此时不该 500，直接复用已有账号。
+    const again = await ctx.users.byEmailWithGroup(syntheticEmail).catch(() => null);
+    if (!again) throw e;
+    user = again;
+  }
   if (avatar) {
     try {
       await ctx.users.updateProfile(user.id, { avatar });

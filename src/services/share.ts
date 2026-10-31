@@ -698,6 +698,9 @@ export class ShareService {
       size: file!.size,
       policyId: file!.storage_policy_files,
       props: file!.props ?? {},
+      // 加密标志跟着文件走：实体被复用（enc_meta 在实体上），但新文件行
+      // 也要标上，否则列表/详情不显示锁标，UI 与内容不一致。
+      encrypted: file!.encrypted,
     });
 
     if (file!.type === FileType.File && file!.primary_entity) {
@@ -721,17 +724,41 @@ export class ShareService {
    * 提交分享举报。同一用户对同一分享只允许一条 pending 举报（幂等：已有则直接返回）。
    * 举报人不一定拥有该分享，所以只存分享 id，不校验归属。
    */
-  async report(shareHashId: string, reason: string, detail: string | undefined, reporterId: number): Promise<{ id: number }> {
+  /** 举报理由白名单 + 详情长度上限（前端是下拉 + 文本框，这里防绕过）。 */
+  private static readonly REPORT_REASONS = new Set([
+    'illegal',
+    'porn',
+    'violence',
+    'fraud',
+    'copyright',
+    'other',
+  ]);
+  private static readonly MAX_REPORT_DETAIL = 2000;
+
+  async report(
+    shareHashId: string,
+    reason: string,
+    detail: string | undefined,
+    reporterId: number,
+  ): Promise<{ id: number }> {
     const shareId = this.ctx.codec.decodeShareID(shareHashId);
     if (shareId == null) throw new AppError(CodeNotFound, 'Share not found');
+    // 校验分享真实存在：否则任意 hashid 都能塞进一条垃圾举报
+    const share = await this.ctx.shares.byId(shareId);
+    if (!share) throw new AppError(CodeNotFound, 'Share not found');
+
+    const normalizedReason = ShareService.REPORT_REASONS.has(reason) ? reason : 'other';
+    // String() 是运行期防御：JSON body 里 detail 可能是数字/对象，直接 .trim() 会抛
+    const text = String(detail ?? '').trim().slice(0, ShareService.MAX_REPORT_DETAIL) || null;
+
     const repo = new ShareReportRepo(this.ctx.env);
     const existing = await repo.pendingByUser(shareId, reporterId);
     if (existing) return { id: existing.id };
     const row = await repo.create({
       shareId,
       reporterId,
-      reason: reason || 'other',
-      detail: detail ?? null,
+      reason: normalizedReason,
+      detail: text,
     });
     logAudit(this.ctx, 'report_abuse', reporterId, { share_id: shareId, reason: row.reason });
     return { id: row.id };

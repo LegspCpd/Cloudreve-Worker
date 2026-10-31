@@ -12,7 +12,7 @@ import { AppContext } from './context';
 import { logAudit } from './audit';
 import { warmUserCache } from './userCache';
 import type { GroupRow, UserRow, UserWithGroup } from '../db/types';
-import { BooleanSet, FileType, GroupPermission } from '../lib/boolset';
+import { BooleanSet, GroupPermission } from '../lib/boolset';
 import {
   AppError,
   Code2FACodeErr,
@@ -529,24 +529,29 @@ export class UserService {
    * （JSON 字符串数组，元素为文件夹名）。重名自动跳过；任一创建失败只记日志、
    * 不抛出，避免影响注册主流程。
    */
+  /**
+   * 给新用户铺「初始文件夹」（对标 Pro 的「新用户初始文件」）。
+   *
+   * 设置项是 JSON 字符串数组，元素为根目录下的文件夹名。一条
+   * `INSERT ... SELECT unnest` 完成，不会为每个目录各打一次数据库。
+   */
   private async seedInitialFolders(userId: number): Promise<void> {
     const names = this.ctx.settings.getJson<string[]>('initial_files', []);
     if (!Array.isArray(names) || names.length === 0) return;
+    const cleaned: string[] = [];
+    for (const raw of names) {
+      const name = String(raw ?? '').trim();
+      // 与前端新建文件夹同口径：不允许空名与路径分隔符
+      if (!name || name.includes('/') || name.includes('\\')) continue;
+      if (cleaned.includes(name)) continue;
+      cleaned.push(name.slice(0, 255));
+    }
+    if (cleaned.length === 0) return;
     try {
       const root = await this.ctx.files.ensureRoot(userId);
-      for (const raw of names) {
-        const name = String(raw ?? '').trim();
-        if (!name) continue;
-        const dup = await this.ctx.files.childByName(root.id, name);
-        if (dup) continue;
-        await this.ctx.files.create({
-          type: FileType.Folder,
-          name,
-          ownerId: userId,
-          parentId: root.id,
-        });
-      }
+      await this.ctx.files.createFoldersIfAbsent(root.id, userId, cleaned);
     } catch (e) {
+      // 初始文件夹失败不该让注册整体失败（用户已经建好了）
       console.error('seedInitialFolders failed', e);
     }
   }

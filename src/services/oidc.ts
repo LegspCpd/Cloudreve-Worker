@@ -184,7 +184,9 @@ export async function handleCallback(
   // --- 5. 未绑定：按邮箱找已有账号 ---
   // ⚠️ 仅当 IdP 明确标记邮箱已验证时才允许按邮箱关联，避免未验证的邮箱字段
   // 被冒用、把攻击者的 OIDC 身份绑定到任意已存在（含管理员）账号。
-  if (email && (userinfo as { email_verified?: unknown }).email_verified === true) {
+  const emailVerified =
+    !!email && (userinfo as { email_verified?: unknown }).email_verified === true;
+  if (email && emailVerified) {
     const existing = await ctx.users.byEmail(email);
     if (existing) {
       if (existing.status !== 'active') throw new AppError(40084, 'Account is not active');
@@ -209,13 +211,22 @@ export async function handleCallback(
   assertOidcEmailPolicy(ctx, email);
 
   const groupId = (await ctx.users.isEmpty()) ? 1 : ctx.settings.defaultGroupId;
-  const user = await ctx.users.create({
-    email,
-    nick,
-    passwordDigest: null, // OIDC 用户无本地密码
-    groupId,
-    status: 'active',
-  });
+  let user: UserRow;
+  try {
+    user = await ctx.users.create({
+      email,
+      nick,
+      passwordDigest: null, // OIDC 用户无本地密码
+      groupId,
+      status: 'active',
+    });
+  } catch (e) {
+    // 并发回调 / 邮箱唯一约束：另一个请求已把账号建出来了。
+    // 只有 IdP 验过这个邮箱才允许复用（否则等于凭未验证邮箱接管账号）。
+    const again = emailVerified ? await ctx.users.byEmail(email).catch(() => null) : null;
+    if (!again) throw e;
+    user = again;
+  }
   await ctx.files.ensureRoot(user.id);
   await insertBinding(ctx, user.id, issuer, subject, email);
   logOidcLogin(ctx, user.id, issuer, subject);

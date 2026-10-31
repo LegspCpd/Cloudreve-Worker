@@ -22,7 +22,7 @@ import { FileSystemService } from './fs';
 import { UploadService } from './upload';
 import type { EncryptMetadata, EntityRow, FileRow, TaskRow } from '../db/types';
 import { EntityType, FileType } from '../lib/boolset';
-import { decryptStream, importCtrKey } from '../lib/encCrypto';
+import { decryptFull, decryptStream, importCtrKey } from '../lib/encCrypto';
 import { AppError, CodeFeatureNotEnabled, Err } from '../lib/errors';
 import { createZipStream, type ZipEntry } from '../lib/zip';
 import {
@@ -50,6 +50,14 @@ export const MAX_WORKFLOW_BYTES = 200 * 1024 * 1024;
  * 单条目解压缓冲后的安全量级。
  */
 export const MAX_EXTRACT_ZIP_BYTES = 80 * 1024 * 1024;
+/**
+ * 加密压缩包的解压上限。
+ *
+ * 加密包没有可用的随机访问（AES-CTR 要靠绝对偏移算计数器），只能整段解密
+ * 到内存后再走 zip 目录解析，峰值是「密文 + 明文」两份。按 32MB 封顶，
+ * 给解压过程中的缓冲留出余量（Worker 是 128MB）。
+ */
+export const MAX_EXTRACT_ENCRYPTED_ZIP_BYTES = 32 * 1024 * 1024;
 
 /** 单个条目解压后的上限（防 zip bomb 的硬闸门）。 */
 const MAX_EXTRACT_ENTRY_BYTES = 100 * 1024 * 1024;
@@ -376,15 +384,32 @@ export class WorkflowService {
       if (!entity) throw new AppError(CodeFeatureNotEnabled, 'Entity is missing');
       const policy = await this.ctx.policies.byId(entity.storage_policy_entities);
       if (!policy) throw Err.policyNotAllowed();
-      if (entity.size > MAX_EXTRACT_ZIP_BYTES) {
+
+      // 加密压缩包要先把整段密文解成明文才能随机读 central directory，
+      // 内存峰值是「密文 + 明文」两份，所以上限比明文包低一档。
+      const limit = entity.enc_meta ? MAX_EXTRACT_ENCRYPTED_ZIP_BYTES : MAX_EXTRACT_ZIP_BYTES;
+      if (entity.size > limit) {
         throw new AppError(
           CodeFeatureNotEnabled,
-          `Archive is ${entity.size} bytes, which exceeds the ${MAX_EXTRACT_ZIP_BYTES} byte limit of a single edge request`,
+          `Archive is ${entity.size} bytes, which exceeds the ${limit} byte limit of a single edge request`,
         );
       }
 
       const driver = this.ctx.driverFor(policy);
+      let plainCache: Uint8Array<ArrayBuffer> | null = null;
       const read: RangeReader = async (start, end) => {
+        if (entity.enc_meta) {
+          if (!plainCache) {
+            const { key, iv } = await importCtrKey(
+              JSON.parse(entity.enc_meta) as EncryptMetadata,
+              'decrypt',
+            );
+            const full = await driver.get(entity.source, null);
+            if (!full?.body) throw new ZipError('Failed to read encrypted archive');
+            plainCache = await decryptFull(full.body as ReadableStream<Uint8Array>, key, iv);
+          }
+          return plainCache.slice(start, end + 1);
+        }
         const content = await driver.get(entity.source, `bytes=${start}-${end}`);
         if (!content) throw new ZipError(`Failed to read range ${start}-${end}`);
         return drain(content.body as ReadableStream<Uint8Array>);

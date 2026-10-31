@@ -753,6 +753,14 @@ adminContentRoutes.get('/entity/url/:id', async (c) => {
   if (!entity || entity.deleted_at) {
     return fail(c, new AppError(40077, 'Entity not found'));
   }
+  // 客户端加密的实体：存储里是密文，直接给直链等于给用户一个打不开的文件。
+  // 这种实体只能经站点代理（/file/content）下载，那里会解密。
+  if (entity.enc_meta) {
+    return fail(
+      c,
+      new AppError(40035, 'Entity is client-side encrypted; download it through the site instead'),
+    );
+  }
   try {
     const policy = await ctx.policies.byId(entity.storage_policy_entities);
     if (!policy) throw new AppError(40035, 'Storage policy not found');

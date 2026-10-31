@@ -152,6 +152,26 @@ sessionRoutes.get('/oidc/login', async (c) => {
   }
 });
 
+/**
+ * 第三方登录回调的 IP 限速。
+ *
+ * 每次回调都会拿 code 去 IdP 换 token 再拉 userinfo，是**对外部服务**的调用，
+ * 不限速就能被人拿来烧掉应用配额（QQ 互联等按日调用量计费/限流）。
+ * 正常用户一分钟只走一次，所以入口即计数，不做「只统计失败」。
+ */
+async function socialCallbackGate(c: AppRequest): Promise<Response | null> {
+  const gate = await hitRateLimit(c.env, {
+    ...RATE_LIMITS.socialCallbackByIp,
+    id: clientIp(c),
+  });
+  if (gate.ok) return null;
+  c.header('Retry-After', String(gate.retryAfter));
+  return fail(
+    c,
+    new AppError(CodeRateLimited, `Too many sign-in attempts, retry in ${gate.retryAfter}s`),
+  );
+}
+
 /** OIDC 回调（IdP → 本站）。JSON 形态：前端拿到 code/state 后调这里换 token。 */
 sessionRoutes.post('/oidc/callback', async (c) => {
   const ctx = ctxOf(c);
@@ -159,11 +179,14 @@ sessionRoutes.post('/oidc/callback', async (c) => {
   if (!body.code || !body.state) {
     return fail(c, Err.param('code and state are required'));
   }
+  const limited = await socialCallbackGate(c);
+  if (limited) return limited as never;
   try {
-    const { user } = await handleCallback(ctx, body.code, body.state);
+    const { user, returnTo } = await handleCallback(ctx, body.code, body.state);
     // 与密码登录一致的返回形状：{ user, token }。审计已在 oidc.ts 写过，这里不重复。
     const result = await new UserService(ctx).completeLogin(user, false);
-    return ok(c, result);
+    // return_to 是发起登录时的 ?redirect=（已校验为站内相对路径）
+    return ok(c, { ...result, return_to: returnTo });
   } catch (e) {
     return fail(c, e);
   }
@@ -236,10 +259,14 @@ sessionRoutes.post('/qq/callback', async (c) => {
   if (!body.code || !body.state) {
     return fail(c, Err.param('code and state are required'));
   }
+  const limited = await socialCallbackGate(c);
+  if (limited) return limited as never;
   try {
-    const { user } = await handleQqCallback(ctx, body.code, body.state);
+    const { user, returnTo } = await handleQqCallback(ctx, body.code, body.state);
     const result = await new UserService(ctx).completeLogin(user, false);
-    return ok(c, result);
+    // return_to 是发起登录时带的 ?redirect=，回调页据此跳回原位置
+    // （后端已校验为站内相对路径）。
+    return ok(c, { ...result, return_to: returnTo });
   } catch (e) {
     return fail(c, e);
   }

@@ -48,7 +48,15 @@ import { ZipError } from '../lib/zipread';
 import { drain, nameDecoder } from '../services/workflow';
 import { URI } from '../services/uri';
 import { FileType } from '../lib/boolset';
-import { AppError, CodeFeatureNotEnabled, CodeNotFound, CodeRootProtected, Err } from '../lib/errors';
+import {
+  AppError,
+  CodeEncryptError,
+  CodeFeatureNotEnabled,
+  CodeNotFound,
+  CodeRootProtected,
+  Err,
+  RangeNotSatisfiable,
+} from '../lib/errors';
 import { attachmentDisposition } from '../lib/disposition';
 import { throttleStream } from '../lib/throttle';
 import { sseClientId } from '../lib/sse';
@@ -508,6 +516,19 @@ const serveContent = async (c: AppRequest) => {
       headers,
     });
   } catch (e) {
+    // Range 越界必须是真正的 HTTP 416 + `Content-Range: bytes */总长`：
+    // 本站默认的错误信封是「HTTP 200 + 业务码」，播放器和下载器识别不了，
+    // 会当成「这段没拿到」无限重试。
+    if (e instanceof RangeNotSatisfiable) {
+      return new Response(null, {
+        status: 416,
+        headers: {
+          'Accept-Ranges': 'bytes',
+          'Content-Range': `bytes */${e.totalSize}`,
+          'Access-Control-Allow-Origin': '*',
+        },
+      });
+    }
     return fail(c, e);
   }
 };
@@ -968,13 +989,21 @@ fileRoutes.get('/archive', async (c) => {
 
     // 加密 ZIP：中心目录的多次 Range 读取都基于明文，这里一次性解密并缓存，
     // 后续按区间切片即可（避免每个 Range 都把整包拉一遍）。
+    // 代价是「密文 + 明文」两份内存，所以给一个比明文包更低的上限（Worker 128MB）。
+    const MAX_ENC_ARCHIVE_BYTES = 32 * 1024 * 1024;
     let plainCache: Uint8Array<ArrayBuffer> | null = null;
     let encMeta: EncryptMetadata | null = null;
     if (entity.enc_meta) {
+      if (Number(entity.size) > MAX_ENC_ARCHIVE_BYTES) {
+        throw new AppError(
+          CodeFeatureNotEnabled,
+          `Encrypted archive is larger than ${MAX_ENC_ARCHIVE_BYTES} bytes; download it to browse`,
+        );
+      }
       try {
         encMeta = JSON.parse(entity.enc_meta) as EncryptMetadata;
       } catch {
-        throw new AppError(50002, 'Corrupted encryption metadata');
+        throw new AppError(CodeEncryptError, 'Corrupted encryption metadata');
       }
     }
 
@@ -1412,24 +1441,38 @@ fileRoutes.get('/wopi/:id/contents', async (c) => {
   const { file } = found;
   if (!file.primary_entity) return c.text('file has no entity', 404);
 
-  const entity = await ctx.entities.byId(file.primary_entity);
-  if (!entity) return c.text('entity is missing', 404);
-  const policy = await ctx.policies.byId(entity.storage_policy_entities);
-  if (!policy) return c.text('policy not allowed', 400);
-  const driver = ctx.driverFor(policy);
-
-  const content = await driver.get(entity.source, c.req.header('Range') ?? null);
-  if (!content) return c.text('object not found', 404);
-
-  return new Response(content.body, {
-    status: content.contentRange ? 206 : 200,
-    headers: {
+  // 走 serveEntity：加密实体在这里被还原成明文（AES-CTR 密文对 OnlyOffice
+  // 是坏文件），Range 也按块偏移解出所需片段。PUT 回去时由 overwriteContent
+  // 重新加密，所以「打开 → 编辑 → 保存」对加密文件是闭环的。
+  try {
+    const download = new DownloadService(ctx, new FileSystemService(ctx));
+    const content = await download.serveEntity(
+      ctx.codec.encodeEntityID(file.primary_entity),
+      file.name,
+      c.req.header('Range') ?? null,
+    );
+    const length = content.contentRange
+      ? (contentRangeLength(content.contentRange) ?? content.size)
+      : content.size;
+    const headers: Record<string, string> = {
       'Content-Type': 'application/octet-stream',
-      'Content-Length': String(content.size),
-      ...(content.contentRange ? { 'Content-Range': content.contentRange } : {}),
+      'Content-Length': String(length),
       ...wopiVersionHeader(ctx, file),
-    },
-  });
+    };
+    if (content.contentRange) headers['Content-Range'] = content.contentRange;
+    return new Response(content.body, {
+      status: content.contentRange ? 206 : 200,
+      headers,
+    });
+  } catch (e) {
+    if (e instanceof RangeNotSatisfiable) {
+      return new Response(null, {
+        status: 416,
+        headers: { 'Content-Range': `bytes */${e.totalSize}` },
+      });
+    }
+    return c.text(e instanceof AppError ? e.msg : 'failed to read content', 404);
+  }
 });
 
 fileRoutes.post('/wopi/:id/contents', async (c) => {

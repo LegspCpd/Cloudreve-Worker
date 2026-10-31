@@ -17,16 +17,18 @@ import { FileSystemService, type DirectLinkInfo } from './fs';
 import { FileSystemType, URI } from './uri';
 import { type EncryptMetadata, type EntityRow, type FileRow } from '../db/types';
 import { FileType } from '../lib/boolset';
-import { decryptFull, decryptStream, importCtrKey } from '../lib/encCrypto';
+import { decryptStream, importCtrKey, incrementCounter } from '../lib/encCrypto';
 import {
   AppError,
   CodeFileNotFound,
   CodeEntityNotExist,
+  CodeEncryptError,
   CodeGroupNotAllowed,
   CodeInvalidSign,
   CodeOwnerOnly,
   CodeSignExpired,
   Err,
+  RangeNotSatisfiable,
 } from '../lib/errors';
 import { GroupPermission } from '../lib/boolset';
 import type { ObjectContent } from '../storage/types';
@@ -94,6 +96,9 @@ function parseRangeStartEnd(range: string, totalSize: number): { start: number; 
     // suffix：最后 N 字节
     const n = Number(endStr);
     if (!Number.isFinite(n) || n <= 0) return null;
+    // 空对象没有「最后 N 字节」：直接判不可满足，否则会算出 end = -1，
+    // 拼出 `bytes=0--1` 这种非法 Range 交给存储驱动。
+    if (totalSize <= 0) return null;
     return { start: Math.max(0, totalSize - n), end: totalSize - 1 };
   }
   const start = Number(startStr);
@@ -287,43 +292,70 @@ export class DownloadService {
       if (hit) return objectFromCacheResponse(hit, entity.size ?? 0);
     }
 
-    const content = await driver.get(entity.source, range ?? null);
-    if (!content) throw new AppError(CodeFileNotFound, 'Object not found in storage backend');
-    void name;
-
     // 客户端加密实体：存储里是密文，这里还原成明文再返回（下载/预览无感）。
     if (entity.enc_meta) {
       let meta: EncryptMetadata;
       try {
         meta = JSON.parse(entity.enc_meta) as EncryptMetadata;
       } catch {
-        throw new AppError(50002, 'Corrupted encryption metadata');
+        throw new AppError(CodeEncryptError, 'Corrupted encryption metadata');
       }
       let key: CryptoKey;
       let iv: Uint8Array<ArrayBuffer>;
       try {
         ({ key, iv } = await importCtrKey(meta, 'decrypt'));
       } catch (e) {
-        throw new AppError(50002, e instanceof Error ? e.message : 'Corrupted encryption metadata');
+        throw new AppError(
+          CodeEncryptError,
+          e instanceof Error ? e.message : 'Corrupted encryption metadata',
+        );
       }
-      if (range) {
-        // Range 请求：AES-CTR 需要从对象起点算计数器，先取全量解密再切片。
-        const full = await driver.get(entity.source, null);
-        if (!full?.body) throw new AppError(CodeFileNotFound, 'Object not found in storage backend');
-        const plain = await decryptFull(full.body as ReadableStream<Uint8Array>, key, iv);
-        const win = parseRangeStartEnd(range, plain.byteLength);
-        if (!win) throw new AppError(416, 'Requested range not satisfiable');
-        const slice = plain.slice(win.start, win.end + 1);
+
+      // 实体 size 是明文大小；AES-CTR 密文与明文等长，可直接当总长用。
+      const totalSize = Number(entity.size ?? 0);
+
+      if (!range) {
+        const content = await driver.get(entity.source, null);
+        if (!content) throw new AppError(CodeFileNotFound, 'Object not found in storage backend');
+        if (!content.body) return content;
         return {
           ...content,
-          body: new Response(slice).body as ReadableStream<Uint8Array>,
-          size: slice.byteLength,
-          contentRange: `bytes ${win.start}-${win.end}/${plain.byteLength}`,
+          body: decryptStream(content.body as ReadableStream<Uint8Array>, key, iv),
+          size: totalSize,
         };
       }
-      if (!content.body) return content;
-      return { ...content, body: decryptStream(content.body as ReadableStream<Uint8Array>, key, iv) };
+
+      // Range 请求：AES-CTR 的计数器按**绝对块偏移**推进，所以只需取
+      // 「起始块对齐位置 → end」这一段密文，解密后丢掉前导字节即可。
+      // 这样大文件的拖动播放不会把整个对象拉进内存（旧实现是整段解密再切片）。
+      const win = parseRangeStartEnd(range, totalSize);
+      if (!win) throw new RangeNotSatisfiable(totalSize);
+      const alignedStart = win.start - (win.start % 16);
+      const part = await driver.get(entity.source, `bytes=${alignedStart}-${win.end}`);
+      if (!part?.body) throw new RangeNotSatisfiable(totalSize);
+
+      const cipher = new Uint8Array(await new Response(part.body).arrayBuffer());
+      // 少数驱动会忽略 Range 直接回整个对象：按绝对偏移自行截取。
+      const seg = part.contentRange ? cipher : cipher.slice(alignedStart, win.end + 1);
+      const counter = incrementCounter(iv, alignedStart / 16);
+      const plain = new Uint8Array(
+        await crypto.subtle.decrypt({ name: 'AES-CTR', counter, length: 128 }, key, seg),
+      );
+      const skip = win.start - alignedStart;
+      const wanted = win.end - win.start + 1;
+      const slice = plain.slice(skip, skip + wanted);
+
+      return {
+        body: new Response(slice).body as ReadableStream<Uint8Array>,
+        size: totalSize,
+        contentType: part.contentType,
+        contentRange: `bytes ${win.start}-${win.end}/${totalSize}`,
+      };
     }
+
+    const content = await driver.get(entity.source, range ?? null);
+    if (!content) throw new AppError(CodeFileNotFound, 'Object not found in storage backend');
+    void name;
 
     // 回源成功且是完整 200 内容 → 后台写入边缘缓存（tee 出一路流，不影响本次响应）
     if (cacheable && !content.contentRange && content.body) {

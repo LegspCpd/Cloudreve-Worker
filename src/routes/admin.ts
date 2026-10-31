@@ -176,12 +176,11 @@ adminRoutes.post('/share/report/:id', async (c) => {
   const ctx = ctxOf(c);
   const body = (await c.req.json().catch(() => ({}))) as { status?: string };
   const status: ShareReportStatus = body.status === 'resolved' ? 'resolved' : 'ignored';
+  // 裸 Number() 会把 "abc" 变成 NaN 塞进 SQL 参数，驱动层直接报错成 500
+  const id = numericId(c.req.param('id'), () => null);
+  if (id === null) return fail(c, Err.param('Invalid report id'));
   try {
-    await new ShareService(ctx, new FileSystemService(ctx)).resolveReport(
-      Number(c.req.param('id')),
-      status,
-      ctx.user!.id,
-    );
+    await new ShareService(ctx, new FileSystemService(ctx)).resolveReport(id, status, ctx.user!.id);
     return ok(c);
   } catch (e) {
     return fail(c, e);

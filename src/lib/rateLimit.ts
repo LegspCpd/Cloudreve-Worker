@@ -148,4 +148,12 @@ export const RATE_LIMITS = {
    * 30 次/分钟已足够把在线爆破压到无意义的速率。
    */
   davAuthByIp: { bucket: 'dav:auth:ip', limit: 30, windowSec: 60 },
+  /**
+   * 同一 IP 的第三方登录回调：20 次 / 分钟。
+   *
+   * 每次回调都会拿 code 去 IdP 换 token、再拉一次 userinfo，打满会烧掉
+   * 应用配额（QQ 互联、各类 OIDC 提供方都有日调用上限）。正常用户一分钟
+   * 只走一次，20 次足够覆盖重试。
+   */
+  socialCallbackByIp: { bucket: 'social:cb:ip', limit: 20, windowSec: 60 },
 } as const;

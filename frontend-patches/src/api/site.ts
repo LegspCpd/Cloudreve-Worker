@@ -58,6 +58,8 @@ export interface SiteConfig {
   /** 第三方登录（QQ 互联，edge 自建）。登录页据此显示「使用 QQ 登录」按钮。 */
   qq_enabled?: boolean;
   qq_name?: string;
+  /** 站点公告（edge 自建 Pro 功能）：纯文本，登录后顶部横幅展示，空则不显示。 */
+  announcement?: string;
 }
 
 export interface CaptchaResponse {

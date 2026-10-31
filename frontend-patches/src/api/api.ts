@@ -211,7 +211,10 @@ export function send2FALogin(req: TwoFALoginRequest): ThunkResponse<LoginRespons
  * 第三方登录（OIDC，edge 自建）：用 IdP 回调带回的 code + state 换本站 token。
  * 与密码登录返回同形状的 LoginResponse。
  */
-export function sendOidcCallback(req: { code: string; state: string }): ThunkResponse<LoginResponse> {
+export function sendOidcCallback(req: {
+  code: string;
+  state: string;
+}): ThunkResponse<LoginResponse & { return_to?: string }> {
   return async (dispatch, _getState) => {
     return await dispatch(
       send(
@@ -230,7 +233,10 @@ export function sendOidcCallback(req: { code: string; state: string }): ThunkRes
 }
 
 /** QQ 互联登录回调：带 code/state 调后端换本站 token（见 services/social.ts）。 */
-export function sendQqCallback(req: { code: string; state: string }): ThunkResponse<LoginResponse> {
+export function sendQqCallback(req: {
+  code: string;
+  state: string;
+}): ThunkResponse<LoginResponse & { return_to?: string }> {
   return async (dispatch, _getState) => {
     return await dispatch(
       send(

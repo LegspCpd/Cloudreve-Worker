@@ -140,6 +140,20 @@ export class AppError extends Error {
 }
 
 /**
+ * Range 请求越界。
+ *
+ * 单独成类而不是只抛一个 `AppError`：这需要 HTTP 416 + `Content-Range: bytes * /总长`，
+ * 而不是本站统一的「HTTP 200 + 业务码」信封。播放器/下载器靠 416 判断
+ * 「这段没有」，拿到 200 会一直重试。
+ */
+export class RangeNotSatisfiable extends AppError {
+  constructor(public readonly totalSize: number) {
+    super(CodeParamErr, 'Requested range not satisfiable', { totalSize });
+    this.name = 'RangeNotSatisfiable';
+  }
+}
+
+/**
  * 构造 AppError 的语法糖。
  * `newError(CodeFileNotFound, 'File not found')`
  */

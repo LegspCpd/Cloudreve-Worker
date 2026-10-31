@@ -1258,6 +1258,29 @@ export class FileRepo {
     return normalizeFile(rows[0]!);
   }
 
+  /**
+   * 在指定目录下批量创建文件夹（同名已存在则跳过）。
+   *
+   * 注册时给新用户铺「初始文件夹」用：一条 `INSERT ... SELECT ... unnest`
+   * 搞定，避免每个目录一次 `childByName` + 一次 `create`（边缘单次往返 ~250ms，
+   * 三个目录就是 6 次串行）。
+   */
+  async createFoldersIfAbsent(
+    parentId: number,
+    ownerId: number,
+    names: string[],
+  ): Promise<void> {
+    if (names.length === 0) return;
+    await this.sql`
+      INSERT INTO files (type, name, owner_id, file_children, size, props)
+      SELECT ${1}::int, n, ${ownerId}, ${parentId}, 0, '{}'::jsonb
+      FROM unnest(${names}::text[]) AS n
+      WHERE NOT EXISTS (
+        SELECT 1 FROM files f WHERE f.file_children = ${parentId} AND f.name = n
+      )
+    `;
+  }
+
   async rename(id: number, newName: string): Promise<void> {
     await this.sql`UPDATE files SET name = ${newName}, updated_at = now() WHERE id = ${id}`;
   }
