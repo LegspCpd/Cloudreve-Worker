@@ -64,6 +64,11 @@ function patchFingerprint() {
     // 补丁在两个平台算出不同包名，本机会永远下载不到 CI 发的包。
     h.update(readFileSync(f, 'utf8').replaceAll('\r\n', '\n'));
   }
+  // index.html 的占位符填充与自愈脚本都写在当前脚本里，它们同样决定构建产物
+  // （预构建包里的 index.html 就带着这段）。不计入指纹的话，改了自愈逻辑但包名
+  // 不变，部署时会继续用旧包、新逻辑永远上不去。
+  h.update('scripts/fetch-frontend.mjs');
+  h.update(readFileSync(path.join(ROOT, 'scripts/fetch-frontend.mjs'), 'utf8').replaceAll('\r\n', '\n'));
   return h.digest('hex').slice(0, 8);
 }
 
@@ -230,7 +235,14 @@ function patchIndexHtml() {
   // 6 秒后 #root 还是空的，就把已经在等待的新 SW 直接推上去并重载一次。
   // 有 sessionStorage 兜底，只重载一次，不会循环。
   const selfHealTag = `<script>${SELF_HEAL_SCRIPT}</script>`;
-  if (!finalHtml.includes('__edge_self_heal')) {
+  if (/<script>\s*\/\* __edge_self_heal \*\/[\s\S]*?<\/script>/.test(finalHtml)) {
+    // 预构建包的 index.html 里已经烘焙过旧版自愈脚本。不能因为「有标记」就跳过，
+    // 否则脚本逻辑更新后，下载旧包部署的站点永远拿不到新逻辑 —— 整段替换。
+    finalHtml = finalHtml.replace(
+      /<script>\s*\/\* __edge_self_heal \*\/[\s\S]*?<\/script>/,
+      selfHealTag,
+    );
+  } else {
     finalHtml = finalHtml.replace('</body>', `  ${selfHealTag}\n</body>`);
   }
 
