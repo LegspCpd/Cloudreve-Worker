@@ -161,6 +161,43 @@ try {
     rejected = true;
   }
   check('短密钥被拒绝', rejected);
+
+  // ---------------------------------------------------------------------
+  // [7] 下载侧 Range 路径：只取「起始块对齐位置 → end」这一段密文，
+  //     用对齐后的计数器解密，再丢掉前导字节。
+  //
+  // 这是 `DownloadService.serveEntity` 里加密 + Range 的实际算法：
+  // 不再整段解密（大文件会 OOM），但必须与「整段解密后切片」逐字节一致。
+  // ---------------------------------------------------------------------
+  console.log('\n[7] Range 按块偏移解密 == 整段解密后切片');
+  const total = plainBytes.byteLength;
+  const cases = [
+    { start: 0, end: 15 },
+    { start: 0, end: 4095 },
+    { start: 1, end: 16 },
+    { start: 7, end: 100 },
+    { start: 16, end: 31 },
+    { start: 12345, end: 23456 },
+    { start: total - 100, end: total - 1 },
+    { start: total - 3, end: total - 1 }, // 尾部不足一块
+  ];
+  let rangeOk = 0;
+  for (const { start, end } of cases) {
+    const alignedStart = start - (start % 16);
+    // 模拟驱动返回的 206 片段
+    const seg = single.slice(alignedStart, end + 1);
+    const rKey = await importCtrKey(meta, 'decrypt');
+    const counter = inc(rKey.iv, alignedStart / 16);
+    const plain = new Uint8Array(
+      await crypto.subtle.decrypt({ name: 'AES-CTR', counter, length: 128 }, rKey.key, seg),
+    );
+    const skip = start - alignedStart;
+    const slice = plain.slice(skip, skip + (end - start + 1));
+    const want = plainBytes.slice(start, end + 1);
+    if (Buffer.from(slice).equals(Buffer.from(want))) rangeOk += 1;
+    else console.log(`      mismatch at ${start}-${end}`);
+  }
+  check(`${cases.length} 个 Range 窗口全部一致`, rangeOk === cases.length, `${rangeOk}/${cases.length}`);
 } catch (e) {
   failed += 1;
   console.error('  ERROR', e);
