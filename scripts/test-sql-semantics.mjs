@@ -315,6 +315,37 @@ try {
       .reference_count,
   );
   check('计数没有变成 -1', rc === 0, String(rc));
+
+  // -------------------------------------------------------------------------
+  // [12] 迁移可重放（幂等）
+  //
+  // `provision()` 的判据是 KV 里的「最后应用的文件名」。标记丢了（换 KV、
+  // 手动清缓存）就会从 0001 重放一遍。任何一步不幂等都会直接把存量部署打挂。
+  // 这里在建好库、已经有数据的情况下把 17 个迁移再跑一遍。
+  // -------------------------------------------------------------------------
+  console.log('\n[12] 迁移重放幂等');
+  let replayError = null;
+  for (const f of files) {
+    const text = readFileSync(path.join(ROOT, 'migrations', f), 'utf8');
+    for (const stmt of splitStatements(text)) {
+      if (!stmt.trim()) continue;
+      try {
+        await db.exec(stmt);
+      } catch (e) {
+        replayError = `${f}: ${e instanceof Error ? e.message : e}`;
+        break;
+      }
+    }
+    if (replayError) break;
+  }
+  check('全部迁移可重放', replayError === null, replayError ?? '');
+  // 重放不该动业务数据
+  const afterReplay = await settings();
+  check('重放后积分没变', Number(afterReplay.credit) === 0, String(afterReplay.credit));
+  check(
+    '重放后容量包没变',
+    Array.isArray(afterReplay.quota_packs) && afterReplay.quota_packs.length === 1,
+  );
 } catch (e) {
   failed += 1;
   console.error('\n  ERROR', e instanceof Error ? e.message : e);
