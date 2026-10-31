@@ -17,7 +17,7 @@
 
 Neon 注册用 GitHub 登录，新建项目挑个近的区域，复制 Dashboard 首页那串 `postgresql://...` 就行，免费档够用。其它库大多强制 TLS，把 `sslmode=require` 带上。
 
-**不支持：PlanetScale（MySQL）、Turso（SQLite）、MongoDB Atlas（文档库）。** 现有 schema 和几百条查询全是 PostgreSQL 方言，这三家不是同一个协议/模型，接不了——要用得另做一套数据层。
+**不支持：PlanetScale 的 MySQL 版、Turso（SQLite）、MongoDB Atlas（文档库）。** 现有 schema 和几百条查询全是 PostgreSQL 方言，这三家不是同一个协议/模型，接不了——要用得另做一套数据层。PlanetScale 的 **Postgres** 版属于 PG 协议，填它的连接串、把 `DB_PROVIDER` 设成 `postgres` 即可。
 
 `DB_PROVIDER` 一般不用填：连接串是 `*.neon.tech` 就走 Neon HTTP，其余自动走标准 PG 协议。只有 Neon 配了自定义域名时才需要写 `DB_PROVIDER=neon`。
 
