@@ -192,7 +192,7 @@ fileRoutes.post('/create', async (c) => {
     const res = await new FileSystemService(ctx).create(URI.parse(body.uri), body.type, {
       metadata: body.metadata,
       errOnConflict: body.err_on_conflict,
-      policyId: body.policy_id,
+      policyId: body.policy_id != null ? ctx.codec.decodePolicyID(String(body.policy_id)) ?? undefined : undefined,
     });
     return ok(c, res);
   } catch (e) {
@@ -233,9 +233,11 @@ fileRoutes.post('/policy', async (c) => {
   }
   try {
     const service = new FileSystemService(ctx);
+    const policyId = ctx.codec.decodePolicyID(String(body.policy_id));
+    if (policyId == null) return fail(c, Err.param('invalid policy_id'));
     const updated = await service.bindPolicy(
       body.uris.map((u) => URI.parse(u)),
-      body.policy_id,
+      policyId,
     );
     return ok(c, { updated, policy_id: body.policy_id });
   } catch (e) {
@@ -259,9 +261,11 @@ fileRoutes.post('/transfer', async (c) => {
   }
   try {
     const service = new FileSystemService(ctx);
+    const policyId = ctx.codec.decodePolicyID(String(body.policy_id));
+    if (policyId == null) return fail(c, Err.param('invalid policy_id'));
     await service.transferPolicy(
       body.uris.map((u) => URI.parse(u)),
-      body.policy_id,
+      policyId,
     );
     return ok(c, { transferred: body.uris.length, policy_id: body.policy_id });
   } catch (e) {
