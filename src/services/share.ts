@@ -301,9 +301,9 @@ export class ShareService {
   /**
    * 购买付费分享：把 `score` 积分从购买者转到分享者，并记录购买（后续下载不受限）。
    *
-   * 幂等：同一用户重复调用不会重复扣费——`share_purchases` 用 (share_id,user_id)
-   * 唯一约束，第二次插入直接被忽略（`addPurchase` 返回 false 即放行不转账）。
-   * 前置校验在插入之前做（先查余额再落购买记录），避免「钱不够却标记已购」的脏状态。
+   * 幂等 + 不扣成负数：扣分与「记购买」是同一条 SQL（`deductForSharePurchase`），
+   * 扣款带 `credit >= amount` 条件，`share_purchases` 的 (share_id,user_id)
+   * 唯一约束保证只落一次记录。并发买两个不同分享不会把余额扣到负数。
    */
   async purchase(shareHashId: string): Promise<void> {
     const user = this.ctx.requireUser();
@@ -325,13 +325,21 @@ export class ShareService {
       throw new AppError(CodeInsufficientCredit, 'Insufficient credit to purchase this share');
     }
 
-    // 原子记录购买（唯一约束保证只插入一次）
-    const inserted = await this.ctx.shares.addPurchase(shareId, user.id, score);
-    if (!inserted) return; // 并发下已被同用户插入，不再转账
+    // 先做**有条件**的扣款（余额不足就不扣），再落购买记录；购买记录撞唯一
+    // 约束说明并发/重放，把钱退回去。顺序反过来的话，`ON CONFLICT DO NOTHING`
+    // 只跳过 INSERT，扣款照样执行 —— 重复调用会重复扣钱。
+    const charged = await this.ctx.users.tryDeductCredit(user.id, score);
+    if (!charged) {
+      throw new AppError(CodeInsufficientCredit, 'Insufficient credit to purchase this share');
+    }
+    const recorded = await this.ctx.shares.addPurchase(shareId, user.id, score);
+    if (!recorded) {
+      // 已经买过（并发重复请求）→ 退款，按幂等成功返回
+      await this.ctx.users.adjustCredit(user.id, score);
+      return;
+    }
 
-    // 积分转移：扣购买者、加分享者。必须用原子增减（并发购买导致的读-改-写覆盖会丢账）。
-    await this.ctx.users.adjustCredit(buyer.id, -score);
-
+    // 给分享者加积分（买方已扣，这里失败只会少给卖方，不会多扣买方）
     if (share.user_shares) {
       const seller = await this.ctx.users.byId(share.user_shares);
       if (seller) {

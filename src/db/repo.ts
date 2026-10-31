@@ -457,6 +457,29 @@ export class UserRepo {
     await this.touchCache(id);
   }
 
+  /**
+   * 原子扣减积分：余额不足直接不扣，返回 false（**不会扣成负数**）。
+   *
+   * 与 `adjustCredit(id, -n)` 的区别就在这里：后者无条件减，同一用户并发
+   * 买两个付费分享会把余额扣到负数。
+   */
+  async tryDeductCredit(userId: number, amount: number): Promise<boolean> {
+    if (amount <= 0) return true;
+    const rows = (await this.sql`
+      UPDATE users SET settings = jsonb_set(
+        COALESCE(settings, '{}'::jsonb),
+        '{credit}',
+        to_jsonb(COALESCE((settings->>'credit')::numeric, 0) - ${amount}::numeric)
+      ), updated_at = now()
+      WHERE id = ${userId}
+        AND COALESCE((settings->>'credit')::numeric, 0) >= ${amount}::numeric
+      RETURNING id
+    `) as Record<string, unknown>[];
+    if (rows.length === 0) return false;
+    await this.touchCache(userId);
+    return true;
+  }
+
   async updateGroup(id: number, groupId: number): Promise<void> {
     await this.sql`
       UPDATE users SET group_users = ${groupId}, updated_at = now() WHERE id = ${id}
@@ -1761,8 +1784,10 @@ export class ShareRepo {
   }
 
   /**
-   * 记录一次购买。返回是否真的插入了新行（(share_id,user_id) 唯一约束下，
-   * 重复调用返回 false，保证积分只转移一次）。
+   * 只记录购买、不动积分。返回是否真的插入了新行。
+   *
+   * ⚠️ 付费购买请用 `deductForSharePurchase`（扣分 + 记录原子完成）。
+   * 这个方法单独用会出现「记了购买但没扣钱」或反之的脏状态。
    */
   async addPurchase(shareId: number, userId: number, amount: number): Promise<boolean> {
     const rows = (await this.sql`

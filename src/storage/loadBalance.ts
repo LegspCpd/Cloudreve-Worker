@@ -104,6 +104,9 @@ export async function pickSlavePolicy(
   }
   // 加权随机
   const total = pool.reduce((sum, s) => sum + (weights[s.id] ?? 1), 0);
+  // 全部权重为 0 时 total 也是 0：此时 `r < 0` 永不成立，会一路落到
+  // 「最后一个」，跟大家都是 0 权重（配置错误）时的等概率兜底不符。
+  if (total <= 0) return pool[Math.floor(Math.random() * pool.length)]!;
   let r = Math.random() * total;
   for (const s of pool) {
     r -= weights[s.id] ?? 1;
