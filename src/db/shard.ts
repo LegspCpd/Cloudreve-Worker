@@ -100,8 +100,11 @@ export function resolveDb(env: Env): DbHandle {
   const backups = backupDatabaseUrls(env);
   const now = Date.now();
 
+  // failover 候选：除最后一个备库外都可切（最后一个只做备份，平时不接流量）。
+  const failoverCandidates = backups.slice(0, -1);
+
   // 主库健康，或没有备库可切 → 直接用主库
-  if (!backups.length || now >= primaryDownUntil) {
+  if (!failoverCandidates.length || now >= primaryDownUntil) {
     return { sql: getSql(env), index: 0, source: SOURCE_NAMES[0], degraded: false };
   }
 
@@ -112,11 +115,11 @@ export function resolveDb(env: Env): DbHandle {
     return { sql: getSql(env), index: 0, source: SOURCE_NAMES[0], degraded: false };
   }
 
-  const backupIndex = 0; // 备库按配置顺序取第一个
+  const backupIndex = 0; // 候选按配置顺序取第一个
   return {
-    sql: sqlForUrl(backups[backupIndex]!.url, provider),
+    sql: sqlForUrl(failoverCandidates[backupIndex]!.url, provider),
     index: backupIndex + 1,
-    source: backups[backupIndex]!.name,
+    source: failoverCandidates[backupIndex]!.name,
     degraded: true,
   };
 }
@@ -170,8 +173,8 @@ const domainDownUntil = new Map<string, number>();
 export type DomainName = 'audit' | 'metadata';
 
 const DOMAIN_SOURCE: Record<DomainName, string> = {
-  audit: 'DATABASE_URL_2',
-  metadata: 'DATABASE_URL_3',
+  audit: 'AUDIT_DB',
+  metadata: 'METADATA_DB',
 };
 
 /**

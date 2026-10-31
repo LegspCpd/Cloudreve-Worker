@@ -86,9 +86,8 @@ Cloudreve v4 的后端，用 TypeScript 照着重写，跑在 Cloudflare Workers
 | `CORS_ALLOW_ORIGINS` | 否 | 允许跨域的源，逗号分隔；同源不用配 |
 | `R2_PUBLIC_BASE` | 否 | R2 公共域名，配了直链不带签名 |
 | `KV_COUNT` | 否 | KV namespace 数量，1–5，默认 1 |
-| `DATABASE_URL_2` | 否 | 日志域：`audit_logs` 运行时单独写这个库，配了首次启动自动搬存量 |
-| `DATABASE_URL_3` | 否 | 元数据域：`metadata` 表同上，列表热路径量大时拆出去提速 |
-| `DATABASE_URL_4`、`_5` | 否 | 冷备库，每次构建自动从主库整库同步（只读）；`DB_FAILOVER` 降级时切到第一个 |
+| `DATABASE_URL_2` … `_5` | 否 | 备库，按顺序。全部自动从主库整库同步；除最后一个外都可作为 `DB_FAILOVER` 的切换目标 |
+| `AUDIT_DB` / `METADATA_DB` | 否 | 可选：审计日志 / 文件元数据单独写一个库（拆热路径），不占上面的备库槽位 |
 | `DB_FAILOVER` | 否 | 填 `1` 开启主库故障切换，仅作应急 |
 
 > [!IMPORTANT]
@@ -98,7 +97,7 @@ Cloudreve v4 的后端，用 TypeScript 照着重写，跑在 Cloudflare Workers
 
 **多 KV：** `KV_COUNT=2..5` 后按角色拆分（站点缓存 / 会话 / 上传 / 外部凭据 / 自举标记），缓解并发写入限速。
 
-**备库：** 只读冷备（`_4`/`_5`），**不是双活**。切到备库期间写入的数据，下次同步会被主库覆盖。`_2`/`_3` 是分域库不是备库，详见 DEPLOY 的「多数据库容灾」。
+**备库：** 只读冷备，**不是双活**。切到备库期间写入的数据，下次同步会被主库覆盖。配多个时按 `DATABASE_URL_2`、`_3`… 的顺序切，最后一个永远只做备份不接流量。
 
 ## 功能
 

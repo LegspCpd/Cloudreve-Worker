@@ -27,6 +27,10 @@ export interface Env {
   DATABASE_URL_3?: string;
   DATABASE_URL_4?: string;
   DATABASE_URL_5?: string;
+  /** 可选分域：audit_logs 单独写这个库（不占 DATABASE_URL_2..5 的备库槽位）。 */
+  AUDIT_DB?: string;
+  /** 可选分域：metadata 表同上。 */
+  METADATA_DB?: string;
   /**
    * 故障切换闸门：`1` / `true` 时，主库连不上会自动降级到第一个可用的
    * 备库（只读语义，仍然允许写 —— 否则站点直接不可用；风险见上）。
