@@ -81,12 +81,23 @@ const EMPTY_CONTENT_URL = 'data:text/plain;charset=utf-8,';
 // 客户端加密的解密原语见 lib/encCrypto.ts（与前端 EncryptedBlob 的 AES-256-CTR 对称）
 // ---------------------------------------------------------------------------
 
-/** 解析 Range 请求头中的 start/end（闭区间，end 缺省为文件末尾）。 */
+/**
+ * 解析 Range 请求头中的 start/end（闭区间）。
+ * 支持三种形态：`bytes=start-end`、`bytes=start-`、`bytes=-N`（末尾 N 字节，播放器常用）。
+ */
 function parseRangeStartEnd(range: string, totalSize: number): { start: number; end: number } | null {
-  const m = /^bytes=(\d+)-(\d*)$/i.exec(range.trim());
+  const m = /^bytes=(\d*)-(\d*)$/i.exec(range.trim());
   if (!m) return null;
-  const start = Number(m[1]);
-  const end = m[2] ? Number(m[2]) : totalSize - 1;
+  const [, startStr, endStr] = m;
+  if (!startStr && !endStr) return null;
+  if (!startStr) {
+    // suffix：最后 N 字节
+    const n = Number(endStr);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return { start: Math.max(0, totalSize - n), end: totalSize - 1 };
+  }
+  const start = Number(startStr);
+  const end = endStr ? Number(endStr) : totalSize - 1;
   if (!Number.isFinite(start) || !Number.isFinite(end) || end < start || start >= totalSize) {
     return null;
   }
@@ -158,8 +169,10 @@ export class DownloadService {
         driver.settings?.stream_saver !== true;
 
       let url: string;
-      // 加密文件必须走本站代理：直链拿到的是存储里的密文，浏览器无法自行解密。
-      if (!file.encrypted && !caps.proxyRequired && !proxyForFilename) {
+      // 加密实体必须走本站代理：直链拿到的是存储里的密文，浏览器无法自行解密。
+      // 按实体的 enc_meta 判断（而非文件的 encrypted 标志），这样下载历史版本时
+      // 也不会因为当前主版本是明文而误发直链。
+      if (!entity.enc_meta && !caps.proxyRequired && !proxyForFilename) {
         // 驱动可直链
         url = await driver.source(entity.source, {
           expire: expiresAt > 0 ? expiresAt * 1000 : undefined,
@@ -339,12 +352,12 @@ export class DownloadService {
     if (file.type !== FileType.File || !file.primary_entity) {
       return { url: '', expires: null };
     }
-    // 加密文件不生成缩略图：存储后端里的密文无法被原生缩略图/Image Resizing 解码。
-    if (file.encrypted) {
-      return { url: '', expires: null };
-    }
     const entity = await this.ctx.entities.byId(file.primary_entity);
     if (!entity) return { url: '', expires: null };
+    // 加密实体不生成缩略图：存储后端里的密文无法被原生缩略图/Image Resizing 解码。
+    if (entity.enc_meta) {
+      return { url: '', expires: null };
+    }
 
     const policy = await this.ctx.policies.byId(entity.storage_policy_entities);
     if (!policy) return { url: '', expires: null };
@@ -454,7 +467,7 @@ export class DownloadService {
 
     await this.ctx.directLinks.incrementDownloads(id);
 
-    if (!file.encrypted && !caps.proxyRequired) {
+    if (!entity.enc_meta && !caps.proxyRequired) {
       return driver.source(entity.source, {
         isDownload: true,
         displayName: file.name,
