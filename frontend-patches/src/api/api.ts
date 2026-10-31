@@ -229,6 +229,25 @@ export function sendOidcCallback(req: { code: string; state: string }): ThunkRes
   };
 }
 
+/** QQ 互联登录回调：带 code/state 调后端换本站 token（见 services/social.ts）。 */
+export function sendQqCallback(req: { code: string; state: string }): ThunkResponse<LoginResponse> {
+  return async (dispatch, _getState) => {
+    return await dispatch(
+      send(
+        "/session/qq/callback",
+        {
+          data: req,
+          method: "POST",
+        },
+        {
+          ...defaultOpts,
+          noCredential: true,
+        },
+      ),
+    );
+  };
+}
+
 export function getUserMe(): ThunkResponse<User> {
   return async (dispatch, _getState) => {
     return await dispatch(

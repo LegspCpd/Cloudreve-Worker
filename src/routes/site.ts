@@ -16,6 +16,7 @@ import { ok } from '../lib/response';
 import { randomString } from '../lib/crypto';
 import { UserService } from '../services/user';
 import { publicOidcInfo } from '../services/oidc';
+import { publicQqInfo } from '../services/social';
 import type { AppContext } from '../services/context';
 import { kvFor } from '../lib/kvRouter';
 import { BACKEND_VERSION } from '../lib/version';
@@ -411,6 +412,7 @@ siteRoutes.get('/config/:section', async (c) => {
   switch (section) {
     case 'login': {
       const oidc = publicOidcInfo(ctx);
+      const qq = publicQqInfo(ctx);
       return ok(c, {
         login_captcha: s.loginCaptcha,
         reg_captcha: s.regCaptcha,
@@ -422,6 +424,9 @@ siteRoutes.get('/config/:section', async (c) => {
         // 第三方登录（OIDC）：登录页据此显示「使用 XX 登录」按钮
         oidc_enabled: oidc.enabled,
         oidc_name: oidc.name,
+        // 第三方登录（QQ 互联）：登录页据此显示「使用 QQ 登录」按钮
+        qq_enabled: qq.enabled,
+        qq_name: qq.name,
       }) as never;
     }
 

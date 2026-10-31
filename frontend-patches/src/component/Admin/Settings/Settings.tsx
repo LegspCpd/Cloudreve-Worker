@@ -201,6 +201,12 @@ const Settings = () => {
                     "oidc_client_secret",
                     "oidc_scopes",
                     "oidc_auto_register",
+                    "qq_enabled",
+                    "qq_name",
+                    "qq_app_id",
+                    "qq_app_secret",
+                    "qq_auto_register",
+                    "qq_scope",
                   ]}
                 >
                   <UserSession />

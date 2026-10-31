@@ -19,6 +19,7 @@ import { UserService } from '../services/user';
 import { PasskeyService } from '../services/passkey';
 import { OAuthService } from '../services/oauth';
 import { buildAuthorizeUrl, handleCallback, publicOidcInfo } from '../services/oidc';
+import { buildQqAuthorizeUrl, handleQqCallback } from '../services/social';
 import { AppError, CodeNotFullySuccess, CodeNotFound, CodeRateLimited, Err } from '../lib/errors';
 import { verifyCaptcha } from './site';
 import { RATE_LIMITS, clearRateLimit, clientIp, hitRateLimit } from '../lib/rateLimit';
@@ -192,6 +193,56 @@ sessionRoutes.get('/oidc/callback', async (c) => {
 sessionRoutes.get('/oidc/info', (c) => {
   const ctx = ctxOf(c);
   return ok(c, publicOidcInfo(ctx));
+});
+
+// ---------------------------------------------------------------------------
+// 第三方登录（QQ 互联，OAuth2 授权码流程）。服务编排见 `services/social.ts`。
+// ---------------------------------------------------------------------------
+
+/** QQ 登录：生成 state 后 302 跳转到 QQ 授权页。 */
+sessionRoutes.get('/qq/login', async (c) => {
+  const ctx = ctxOf(c);
+  const rawRedirect = c.req.query('redirect') ?? '/home';
+  const returnTo = rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') ? rawRedirect : '/home';
+  try {
+    const url = await buildQqAuthorizeUrl(ctx, returnTo);
+    return c.redirect(url, 302);
+  } catch (e) {
+    return fail(c, e);
+  }
+});
+
+/** QQ 回调（QQ → 本站）：把 code/state 透传给前端回调页，由前端再调 JSON 端点。 */
+sessionRoutes.get('/qq/callback', async (c) => {
+  const ctx = ctxOf(c);
+  const code = c.req.query('code') ?? '';
+  const state = c.req.query('state') ?? '';
+  const err = c.req.query('error') ?? '';
+  const base = ctx.settings.siteUrl.replace(/\/+$/, '');
+  const target = new URL(`${base}/session/qq/callback`);
+  if (err) {
+    target.searchParams.set('error', err);
+  } else {
+    target.searchParams.set('code', code);
+    target.searchParams.set('state', state);
+  }
+  return c.redirect(target.toString(), 302);
+});
+
+/** QQ 回调（前端 → 本站 JSON）：用 code/state 换 token 并完成登录。 */
+sessionRoutes.post('/qq/callback', async (c) => {
+  const ctx = ctxOf(c);
+  const body = (await c.req.json().catch(() => ({}))) as { code?: string; state?: string };
+  if (!body.code || !body.state) {
+    return fail(c, Err.param('code and state are required'));
+  }
+  try {
+    const { user } = await handleQqCallback(ctx, body.code, body.state);
+    const result = await new UserService(ctx).completeLogin(user, false);
+    return ok(c, result);
+  } catch (e) {
+    return fail(c, e);
+  }
 });
 
 /**

@@ -55,6 +55,9 @@ export interface SiteConfig {
   /** 第三方登录（OIDC，edge 自建）。登录页据此显示第三方登录按钮。 */
   oidc_enabled?: boolean;
   oidc_name?: string;
+  /** 第三方登录（QQ 互联，edge 自建）。登录页据此显示「使用 QQ 登录」按钮。 */
+  qq_enabled?: boolean;
+  qq_name?: string;
 }
 
 export interface CaptchaResponse {

@@ -10,6 +10,7 @@ import SessionIntro from "../component/Pages/Login/SessionIntro.tsx";
 import DesktopCallback from "../component/Pages/Login/Signin/DesktopCallback.tsx";
 import MobileCallback from "../component/Pages/Login/Signin/MobileCallback.tsx";
 import OidcCallback from "../component/Pages/Login/Signin/OidcCallback.tsx";
+import QqCallback from "../component/Pages/Login/Signin/QqCallback.tsx";
 import SignIn from "../component/Pages/Login/Signin/SignIn.tsx";
 import SignUp from "../component/Pages/Login/Signup.tsx";
 import NoMatch from "../component/Pages/NoMatch.tsx";
@@ -56,6 +57,12 @@ export const router = createBrowserRouter([
             // 页面带 code/state 调 /api/v4/session/oidc/callback 换本站 token。
             path: "/session/oidc/callback",
             element: <OidcCallback />,
+          },
+          {
+            // 第三方登录（QQ 互联，edge 自建）回调页：QQ 授权后跳回这里，
+            // 页面带 code/state 调 /api/v4/session/qq/callback 换本站 token。
+            path: "/session/qq/callback",
+            element: <QqCallback />,
           },
           {
             path: "*",

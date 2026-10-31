@@ -83,6 +83,14 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   oidc_client_secret: '',
   oidc_scopes: 'openid profile email',
   oidc_auto_register: '1',
+  // 第三方登录（QQ 互联，edge 自建 Pro 功能）：OAuth2 授权码流程，无 email，
+  // 本地账号用合成邮箱落库（见 src/services/social.ts）。
+  qq_enabled: '0',
+  qq_name: '',
+  qq_app_id: '',
+  qq_app_secret: '',
+  qq_auto_register: '1',
+  qq_scope: 'get_user_info',
   captcha_type: '',
   // 内置图形验证码的渲染参数（官方「验证码」设置页读写，键名对齐上游 inventory/setting.go:539-555）
   captcha_mode: '3',

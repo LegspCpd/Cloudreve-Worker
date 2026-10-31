@@ -52,11 +52,11 @@ interface PhaseCollectEmailProps {
 const PhaseCollectEmail = ({ email, setEmail, control, onOAuthPasskeyLogin }: PhaseCollectEmailProps) => {
   const { t } = useTranslation();
   const query = useQuery();
-  const { register_enabled, authn, oidc_enabled, oidc_name } = useAppSelector((state) => state.siteConfig.login.config);
+  const { register_enabled, authn, oidc_enabled, oidc_name, qq_enabled, qq_name } = useAppSelector((state) => state.siteConfig.login.config);
   const tos = useAppSelector((state) => state.siteConfig.login.config.tos_url);
   const privacyPolicy = useAppSelector((state) => state.siteConfig.login.config.privacy_policy_url);
 
-  const showFooter = tos || privacyPolicy || authn || oidc_enabled;
+  const showFooter = tos || privacyPolicy || authn || oidc_enabled || qq_enabled;
 
   useEffect(() => {
     if (!!query.get("email")) {
@@ -69,6 +69,13 @@ const PhaseCollectEmail = ({ email, setEmail, control, onOAuthPasskeyLogin }: Ph
   const startOidcLogin = () => {
     const redirect = query.get("redirect") ?? "/home";
     window.location.href = `/api/v4/session/oidc/login?redirect=${encodeURIComponent(redirect)}`;
+  };
+
+  // 第三方登录（QQ 互联，edge 自建）：跳转到后端 /session/qq/login，
+  // 由后端 302 到 QQ 授权页，认证后回落到 /session/qq/callback 页面。
+  const startQqLogin = () => {
+    const redirect = query.get("redirect") ?? "/home";
+    window.location.href = `/api/v4/session/qq/login?redirect=${encodeURIComponent(redirect)}`;
   };
 
   return (
@@ -109,6 +116,11 @@ const PhaseCollectEmail = ({ email, setEmail, control, onOAuthPasskeyLogin }: Ph
             {oidc_enabled && (
               <Button fullWidth variant="outlined" color="primary" onClick={startOidcLogin}>
                 {`使用 ${oidc_name || "OpenID Connect"} 登录`}
+              </Button>
+            )}
+            {qq_enabled && (
+              <Button fullWidth variant="outlined" color="primary" onClick={startQqLogin}>
+                {`使用 ${qq_name || "QQ"} 登录`}
               </Button>
             )}
           </Stack>

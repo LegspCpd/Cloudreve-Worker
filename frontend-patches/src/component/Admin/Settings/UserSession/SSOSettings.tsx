@@ -41,14 +41,23 @@ export interface SettingSectionProps {}
  */
 const SSOSettings = () => {
   const [expanded, setExpanded] = useState(false);
+  const [qqExpanded, setQqExpanded] = useState(false);
   const { t } = useTranslation("dashboard");
   const { values, setSettings } = useContext(SettingContext);
 
   const enabled = isTrueVal(values.oidc_enabled);
+  const qqEnabled = isTrueVal(values.qq_enabled);
 
   const onToggle = useCallback(
     (checked: boolean) => {
       setSettings({ oidc_enabled: checked ? "1" : "0" });
+    },
+    [setSettings],
+  );
+
+  const onQqToggle = useCallback(
+    (checked: boolean) => {
+      setSettings({ qq_enabled: checked ? "1" : "0" });
     },
     [setSettings],
   );
@@ -140,6 +149,86 @@ const SSOSettings = () => {
               />
               <NoMarginHelperText>
                 请把该地址填入身份提供方的回调白名单（Redirect URI）。
+              </NoMarginHelperText>
+            </FormControl>
+          </Stack>
+        </AccordionDetails>
+      </StyledAccordion>
+
+      <StyledAccordion expanded={qqExpanded} disableGutters onChange={(_e, exp) => setQqExpanded(exp)}>
+        <AccordionSummary expandIcon={<ExpandMoreRounded />}>
+          <FormControlLabel
+            control={
+              <Switch
+                size={"small"}
+                checked={qqEnabled}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => onQqToggle(e.target.checked)}
+              />
+            }
+            label={"QQ 互联"}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </AccordionSummary>
+        <AccordionDetails sx={{ display: "block" }}>
+          <Stack spacing={2}>
+            <FormControl fullWidth>
+              <DenseFilledTextField
+                label={"显示名称"}
+                value={values.qq_name ?? ""}
+                onChange={(e) => setSettings({ qq_name: e.target.value })}
+                placeholder={"QQ"}
+              />
+              <NoMarginHelperText>登录页第三方登录按钮上显示的文字。</NoMarginHelperText>
+            </FormControl>
+            <FormControl fullWidth required>
+              <DenseFilledTextField
+                label={"App ID"}
+                value={values.qq_app_id ?? ""}
+                onChange={(e) => setSettings({ qq_app_id: e.target.value })}
+              />
+              <NoMarginHelperText>QQ 互联开放平台创建应用后获得的 App ID。</NoMarginHelperText>
+            </FormControl>
+            <FormControl fullWidth required>
+              <DenseFilledTextField
+                label={"App Key"}
+                value={values.qq_app_secret ?? ""}
+                onChange={(e) => setSettings({ qq_app_secret: e.target.value })}
+                type={"password"}
+              />
+              <NoMarginHelperText>QQ 互联开放平台创建应用后获得的 App Key。</NoMarginHelperText>
+            </FormControl>
+            <FormControl fullWidth>
+              <DenseFilledTextField
+                label={"Scope"}
+                value={values.qq_scope ?? ""}
+                onChange={(e) => setSettings({ qq_scope: e.target.value })}
+                placeholder={"get_user_info"}
+              />
+              <NoMarginHelperText>请求的 scope，QQ 互联默认 get_user_info 即可获取昵称与头像。</NoMarginHelperText>
+            </FormControl>
+            <FormControl fullWidth>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={isTrueVal(values.qq_auto_register)}
+                    onChange={(e) => setSettings({ qq_auto_register: e.target.checked ? "1" : "0" })}
+                  />
+                }
+                label={"允许自动注册"}
+              />
+              <NoMarginHelperText>
+                开启后，首次通过 QQ 登录且本地无对应账号时将自动创建账号；关闭则要求先绑定已有账号。
+              </NoMarginHelperText>
+            </FormControl>
+            <FormControl fullWidth>
+              <DenseFilledTextField
+                value={`${window.location.origin}/session/qq/callback`}
+                label={"回调地址（Callback URL）"}
+                slotProps={{ input: { readOnly: true } }}
+              />
+              <NoMarginHelperText>
+                请把该地址填入 QQ 互联开放平台应用的回调白名单（Redirect URI）。
               </NoMarginHelperText>
             </FormControl>
           </Stack>

@@ -30,6 +30,7 @@ import m0012 from '../../migrations/0012_file_viewers_backfill.sql';
 import m0013 from '../../migrations/0013_site_state.sql';
 import m0014 from '../../migrations/0014_rate_limits.sql';
 import m0015 from '../../migrations/0015_share_report.sql';
+import m0016 from '../../migrations/0016_social_bindings.sql';
 import { withRetry } from './index';
 import { randomString } from '../lib/crypto';
 import { splitStatements } from '../lib/sql-split.mjs';
@@ -59,6 +60,8 @@ const MIGRATIONS: ReadonlyArray<readonly [name: string, sqlText: string]> = [
   ['0014_rate_limits.sql', m0014],
   // 0015：分享举报表（edge 自建 Pro 功能）
   ['0015_share_report.sql', m0015],
+  // 0016：社交登录绑定表（edge 自建 Pro 功能：QQ 互联等 OAuth2 第三方登录）
+  ['0016_social_bindings.sql', m0016],
 ];
 
 /** KV 标记：值是最后一个已应用的迁移文件名，文件名不变就跳过。 */
