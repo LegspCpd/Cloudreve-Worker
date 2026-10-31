@@ -18,7 +18,24 @@ fallthrough = true
 # 都渲染成部署页的必填框，可选变量放进去会强迫所有用户填写。
 # 需要时自己在面板（或 wrangler.toml）里加，代码对以下变量全部可缺省：
 #   SITE_URL / FRONTEND_URL / LOG_LEVEL / CORS_ALLOW_ORIGINS / R2_PUBLIC_BASE
+#   DB_PROVIDER（neon | postgres；留空按连接串域名自动判断）
 # 机密（DATABASE_URL 等）声明在 .dev.vars.example，由部署页收集。
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 数据库驱动（可选）
+#
+# 不配 DB_PROVIDER 时：DATABASE_URL 是 *.neon.tech → Neon HTTP 驱动；
+# 其它一律走 postgres.js 的标准 PostgreSQL 协议。后者覆盖：
+#   Supabase / CockroachDB / Xata（Postgres）/ Prisma Postgres /
+#   Railway / Render / 自建 Postgres —— SQL 与迁移完全一致。
+#
+# 非 Neon 的 Postgres 建议再绑一个 Hyperdrive（边缘连接池），否则每个
+# isolate 只有 1 条连接、新连接要重新付 TCP+TLS+认证：
+#
+# [[hyperdrive]]
+# binding = "HYPERDRIVE"
+# id = "<Cloudflare 控制台创建的 Hyperdrive 配置 ID>"
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------

@@ -101,6 +101,25 @@ console.log(`  备库 ${urls.length - 1} 个：${urls.slice(1).map(describe).joi
 // 事实来源是 migrations/*.sql + provision.ts，复制一份到这里必然漂移。
 // ---------------------------------------------------------------------------
 
+// 构建期全量同步是 Neon 专用（冷备语义 + Neon HTTP 的 COPY 能力）。非 Neon
+// 的 Postgres 用供应商自带的备份/只读副本，别把这套逻辑硬套上去。
+{
+  const explicit = envVar('DB_PROVIDER').trim().toLowerCase();
+  const syncProvider =
+    explicit === 'neon' || explicit === 'postgres'
+      ? explicit
+      : /neon\.tech|neon\.build/i.test(urls[0])
+        ? 'neon'
+        : 'postgres';
+  if (syncProvider !== 'neon') {
+    console.log(
+      'ℹ 当前不是 Neon 驱动，跳过构建期全量同步。\n' +
+        '  冷备/多库同步是 Neon 专用；非 Neon 请用供应商自带的备份或只读副本。',
+    );
+    process.exit(0);
+  }
+}
+
 const { neon } = await import('@neondatabase/serverless');
 
 const primary = neon(urls[0]);

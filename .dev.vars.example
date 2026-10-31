@@ -1,10 +1,16 @@
 # 「Deploy to Cloudflare」按钮会读取这个文件，在部署页逐项让你填写。
 # 只有机密才放这里；非机密变量在 wrangler.toml 的 [vars] 里。
 
-# Neon Postgres 连接串（必填）。
-# 获取方式：https://neon.tech 注册 → 新建项目 → Dashboard 首页复制
-# "Connection string"（形如 postgresql://user:pass@ep-xxx.aws.neon.tech/neondb?sslmode=require）
+# PostgreSQL 连接串（必填）。Neon / Supabase / CockroachDB / Xata（Postgres）/
+# Prisma Postgres / Railway / Render / 自建都行，SQL 与迁移完全一致。
+#   Neon：Dashboard 首页的 Connection string
+#   Supabase：Settings → Database → Transaction pooler（6543）
+#   其它：标准 postgresql://，多数供应商要带 ?sslmode=require
 DATABASE_URL=
+
+# 可选：数据库驱动。留空按连接串域名自动判断（*.neon.tech → neon，其余 postgres）。
+# 只有 Neon 配了自定义域名时才需要显式写 neon。
+# DB_PROVIDER=neon
 
 # 可选：备库连接串，填了之后每次构建会把主库整库全量同步过来（只读冷备）。
 # 最多再加到 DATABASE_URL_5。主库连不上时可临时用 DB_FAILOVER=1 切过去。

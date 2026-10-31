@@ -16,29 +16,72 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { neon } from '@neondatabase/serverless';
+import postgres from 'postgres';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '..');
 
-function loadDatabaseUrl() {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+/** 读取 .dev.vars（本机）→ KEY=VALUE 映射；环境变量优先。 */
+function loadDevVars() {
+  const out = {};
   const devVars = join(root, '.dev.vars');
-  if (existsSync(devVars)) {
-    for (const line of readFileSync(devVars, 'utf8').split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('DATABASE_URL')) continue;
-      const eq = trimmed.indexOf('=');
-      let value = trimmed.slice(eq + 1).trim();
-      if (
-        (value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))
-      ) {
-        value = value.slice(1, -1);
-      }
-      return value;
+  if (!existsSync(devVars)) return out;
+  for (const line of readFileSync(devVars, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
     }
+    out[key] = value;
   }
-  return null;
+  return out;
+}
+
+function loadDatabaseUrl() {
+  return process.env.DATABASE_URL || loadDevVars().DATABASE_URL || null;
+}
+
+/** 与 Worker 同一套规则：显式 DB_PROVIDER > 连接串域名。 */
+function loadProvider(url) {
+  const explicit = (process.env.DB_PROVIDER || loadDevVars().DB_PROVIDER || '')
+    .trim()
+    .toLowerCase();
+  if (explicit === 'neon' || explicit === 'postgres') return explicit;
+  return /neon\.tech|neon\.build/i.test(url) ? 'neon' : 'postgres';
+}
+
+/**
+ * 按驱动返回一个「模板标签 + (text, params)」都可用的 sql 函数。
+ * seed 只用标签模板与字符串调用，不需要事务，所以这里不做惰性封装。
+ */
+function makeSql(url, provider) {
+  if (provider === 'neon') return neon(url);
+  const pg = postgres(url, {
+    max: 1,
+    idle_timeout: 20,
+    connect_timeout: 15,
+    prepare: false,
+    onnotice: () => {},
+  });
+  return (strings, ...values) => {
+    if (typeof strings === 'string') {
+      const params = Array.isArray(values[0]) ? values[0] : values;
+      return pg.unsafe(strings, params);
+    }
+    let text = '';
+    for (let i = 0; i < strings.length; i++) {
+      text += strings[i];
+      if (i < values.length) text += `$${i + 1}`;
+    }
+    return pg.unsafe(text, values);
+  };
 }
 
 /**
@@ -89,7 +132,9 @@ async function main() {
     process.exit(1);
   }
 
-  const sql = neon(databaseUrl);
+  const provider = loadProvider(databaseUrl);
+  const sql = makeSql(databaseUrl, provider);
+  console.log(`  驱动：${provider}`);
 
   // ---- 站点设置：确保 siteID / secret_key / hash_id_salt 有值 -----------------
   // （Worker 首次请求也会做这件事，这里提前做好，便于直接用 CLI 生成 token）

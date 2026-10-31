@@ -39,18 +39,20 @@
     "test:dav-password": "node scripts/test-dav-password.mjs",
     "test:sse": "node scripts/test-sse.mjs",
     "test:sql-recursive": "node scripts/test-sql-recursive.mjs",
-    "test:enc": "node scripts/test-enc-crypto.mjs"
+    "test:enc": "node scripts/test-enc-crypto.mjs",
+    "test:sql-adapter": "node scripts/test-sql-adapter.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
     "hashids": "^2.3.0",
-    "hono": "^4.13.14"
+    "hono": "^4.13.14",
+    "postgres": "^4.0.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260919.0",
+    "@electric-sql/pglite": "^0.5.11",
     "typescript": "^5.7.2",
-    "wrangler": "^4.135.0",
-    "@electric-sql/pglite": "^0.5.11"
+    "wrangler": "^4.135.0"
   },
   "cloudflare": {
     "bindings": {

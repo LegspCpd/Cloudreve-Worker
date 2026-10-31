@@ -28,6 +28,8 @@ import {
   failoverEnabled,
   getSql,
   primaryDatabaseUrl,
+  resolveProvider,
+  setDefaultProvider,
   sqlForUrl,
   type Sql,
 } from './index';
@@ -86,7 +88,14 @@ export function resetPrimaryHealth(): void {
  */
 export function resolveDb(env: Env): DbHandle {
   const primary = primaryDatabaseUrl(env);
-  if (!primary) throw new Error('DATABASE_URL is not configured');
+  // 绑了 Hyperdrive 时运行时可以只靠 HYPERDRIVE.connectionString，不配
+  // DATABASE_URL 也能跑（DATABASE_URL 仍留给迁移/种子脚本）。
+  if (!primary && !env.HYPERDRIVE?.connectionString) {
+    throw new Error('DATABASE_URL is not configured');
+  }
+
+  const provider = resolveProvider(env);
+  setDefaultProvider(provider);
 
   const backups = backupDatabaseUrls(env);
   const now = Date.now();
@@ -105,7 +114,7 @@ export function resolveDb(env: Env): DbHandle {
 
   const backupIndex = 0; // 备库按配置顺序取第一个
   return {
-    sql: sqlForUrl(backups[backupIndex]!),
+    sql: sqlForUrl(backups[backupIndex]!, provider),
     index: backupIndex + 1,
     source: SOURCE_NAMES[backupIndex + 1]!,
     degraded: true,
@@ -251,7 +260,7 @@ export function resolveDomainHandle(env: Env, domain: DomainName): DbHandle {
   // 短期不可用，回退主库（30s 后重试；连接串修好后自然恢复）。
   try {
     return {
-      sql: sqlForUrl(url),
+      sql: sqlForUrl(url, resolveProvider(env)),
       index: domain === 'audit' ? 1 : 2,
       source: DOMAIN_SOURCE[domain],
       degraded: false,

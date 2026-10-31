@@ -9,7 +9,7 @@
 ![License](https://img.shields.io/badge/license-GPL--3.0-blue)
 ![Runtime](https://img.shields.io/badge/runtime-Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)
 ![Language](https://img.shields.io/badge/language-TypeScript-3178C6?logo=typescript&logoColor=white)
-![Database](https://img.shields.io/badge/database-Neon%20Postgres-00E599)
+![Database](https://img.shields.io/badge/database-PostgreSQL-336791)
 ![Upstream](https://img.shields.io/badge/aligned%20with-Cloudreve%204.19.1-lightgrey)
 
 [上游主页](https://cloudreve.org) • [上游演示站](https://demo.cloudreve.org) • [上游文档](https://docs.cloudreve.org) • [上游仓库](https://github.com/cloudreve/Cloudreve)
@@ -34,7 +34,7 @@
 
 Cloudreve v4 的后端，用 TypeScript 照着重写，跑在 Cloudflare Workers 上。不是拿 Go 编译过去的 —— Go 在 Workers 上跑不了。
 
-存储走 R2 / S3 / OneDrive / 又拍云等，数据库用 Neon 的 serverless Postgres，前端是官方那套，跟 Worker 一起发布。
+存储走 R2 / S3 / OneDrive / 又拍云等，数据库用任意 PostgreSQL（Neon 走 HTTP 驱动，Supabase / CockroachDB / Xata / Prisma Postgres / Railway / Render / 自建走标准协议），前端是官方那套，跟 Worker 一起发布。
 
 ## 部署
 
@@ -64,7 +64,7 @@ Cloudreve v4 的后端，用 TypeScript 照着重写，跑在 Cloudflare Workers
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/LegspCpd/Cloudreve-Worker)
 
-部署页把 `DATABASE_URL` 填成 Neon 连接串，点 Deploy 即可。
+部署页把 `DATABASE_URL` 填成 PostgreSQL 连接串，点 Deploy 即可。
 
 </details>
 
@@ -76,7 +76,9 @@ Cloudreve v4 的后端，用 TypeScript 照着重写，跑在 Cloudflare Workers
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
-| `DATABASE_URL` | 是 | Neon 连接串 |
+| `DATABASE_URL` | 是 | PostgreSQL 连接串（Neon / Supabase / CockroachDB / Xata / Prisma Postgres / 自建） |
+| `DB_PROVIDER` | 否 | `neon` 或 `postgres`；留空按连接串域名自动判断 |
+| `HYPERDRIVE` | 否 | Cloudflare 绑定，不是变量。非 Neon 的 Postgres 建议配，边缘连接池 |
 | `SITE_URL` | 建议 | 站点对外地址；不设回落到后台 siteURL |
 | `JWT_SECRET` | 否 | 令牌签名密钥；不设自动生成入库 |
 | `ADMIN_EMAIL` + `ADMIN_PASSWORD` | 否 | 兜底管理员，两个都配才生效，用于找回管理员权限，建议存成 Secret |
@@ -84,7 +86,7 @@ Cloudreve v4 的后端，用 TypeScript 照着重写，跑在 Cloudflare Workers
 | `CORS_ALLOW_ORIGINS` | 否 | 允许跨域的源，逗号分隔；同源不用配 |
 | `R2_PUBLIC_BASE` | 否 | R2 公共域名，配了直链不带签名 |
 | `KV_COUNT` | 否 | KV namespace 数量，1–5，默认 1 |
-| `DATABASE_URL_2` … `_5` | 否 | 备库连接串，每次构建从主库整库同步 |
+| `DATABASE_URL_2` … `_5` | 否 | 备库连接串，仅 Neon 的构建期全量同步使用 |
 | `DB_FAILOVER` | 否 | 填 `1` 开启主库故障切换，仅作应急 |
 
 > [!IMPORTANT]

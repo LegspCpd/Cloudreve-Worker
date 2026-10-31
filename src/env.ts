@@ -34,6 +34,23 @@ export interface Env {
    */
   DB_FAILOVER?: string;
   /**
+   * 数据库驱动：`neon`（Neon HTTP）或 `postgres`（标准 PostgreSQL 线协议）。
+   *
+   * 不配时按连接串域名自动判断：`*.neon.tech` 走 neon，其余一律走 postgres。
+   * `postgres` 覆盖 Supabase / CockroachDB / Xata（Postgres）/ Prisma Postgres /
+   * Railway / Render / 自建 Postgres —— 它们都讲同一套 PG 协议，SQL 与迁移不用改。
+   * 用 Neon 的自定义域名时才需要显式写 `neon`。
+   */
+  DB_PROVIDER?: string;
+  /**
+   * Cloudflare Hyperdrive 绑定（可选）。
+   *
+   * 绑了之后运行时用 `connectionString` 连它（边缘连接池），否则每个 isolate
+   * 自己维持 1 条到数据库的连接。非 Neon 的 Postgres 建议配 Hyperdrive：
+   * Workers 的连接不能跨请求共享，直连时每条新连接都要付一次 TCP+TLS+认证。
+   */
+  HYPERDRIVE?: { connectionString: string };
+  /**
    * 全量同步时是否跳过这些表（逗号分隔）。缺省用 `replicate.ts` 的内置
    * 默认值。一般不需要配。
    */

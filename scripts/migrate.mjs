@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 把 migrations/*.sql 按顺序应用到 Neon。
+ * 把 migrations/*.sql 按顺序应用到数据库（Neon HTTP 或任意 PostgreSQL）。
  *
  * 用法：
  *   node scripts/migrate.mjs
@@ -22,35 +22,62 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { neon } from '@neondatabase/serverless';
+import postgres from 'postgres';
 import { splitStatements } from '../src/lib/sql-split.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '..');
 
-function loadDatabaseUrl() {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-
+/** 读取 .dev.vars（本机）→ KEY=VALUE 映射；环境变量优先。 */
+function loadDevVars() {
+  const out = {};
   const devVars = join(root, '.dev.vars');
-  if (existsSync(devVars)) {
-    const text = readFileSync(devVars, 'utf8');
-    for (const line of text.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eq = trimmed.indexOf('=');
-      if (eq === -1) continue;
-      const key = trimmed.slice(0, eq).trim();
-      if (key !== 'DATABASE_URL') continue;
-      let value = trimmed.slice(eq + 1).trim();
-      if (
-        (value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))
-      ) {
-        value = value.slice(1, -1);
-      }
-      return value;
+  if (!existsSync(devVars)) return out;
+  for (const line of readFileSync(devVars, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
     }
+    out[key] = value;
   }
-  return null;
+  return out;
+}
+
+function loadDatabaseUrl() {
+  return process.env.DATABASE_URL || loadDevVars().DATABASE_URL || null;
+}
+
+/** 与 Worker 同一套规则：显式 DB_PROVIDER > 连接串域名。 */
+function loadProvider(url) {
+  const explicit = (process.env.DB_PROVIDER || loadDevVars().DB_PROVIDER || '')
+    .trim()
+    .toLowerCase();
+  if (explicit === 'neon' || explicit === 'postgres') return explicit;
+  return /neon\.tech|neon\.build/i.test(url) ? 'neon' : 'postgres';
+}
+
+/** 按驱动创建 `exec(text)`：两边都是一次执行一条语句。 */
+function makeExec(url, provider) {
+  if (provider === 'neon') {
+    const sql = neon(url);
+    return (text) => sql(text);
+  }
+  const pg = postgres(url, {
+    max: 1,
+    idle_timeout: 20,
+    connect_timeout: 15,
+    prepare: false,
+    onnotice: () => {},
+  });
+  return (text) => pg.unsafe(text, []);
 }
 
 
@@ -65,7 +92,9 @@ async function main() {
     process.exit(1);
   }
 
-  const sql = neon(databaseUrl);
+  const provider = loadProvider(databaseUrl);
+  const exec = makeExec(databaseUrl, provider);
+  console.log(`  驱动：${provider}`);
   const migrationsDir = join(root, 'migrations');
   const files = readdirSync(migrationsDir)
     .filter((f) => f.endsWith('.sql'))
@@ -86,7 +115,7 @@ async function main() {
       index += 1;
       const preview = statement.replace(/\s+/g, ' ').slice(0, 70);
       try {
-        await sql(statement);
+        await exec(statement);
         console.log(`    [${index}/${statements.length}] OK  ${preview}`);
       } catch (err) {
         console.error(`    [${index}/${statements.length}] FAIL ${preview}`);

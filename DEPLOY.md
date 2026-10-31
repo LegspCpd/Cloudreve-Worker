@@ -2,17 +2,26 @@
 
 全程走一键部署，手机浏览器就能弄完，本机不用装任何东西。
 
-## 1. 先弄个 Neon 数据库
+## 1. 先弄个 Postgres 数据库
 
-这是唯一需要你手动准备的东西。
+这是唯一需要你手动准备的东西。Neon 最省事，其它 PostgreSQL 也能直接用：
 
-去 [neon.tech](https://neon.tech) 注册（GitHub 登录就行），新建项目，区域挑个离你近的，然后把 Dashboard 首页那串 **Connection string** 复制下来：
+| 供应商 | `DATABASE_URL` 用哪串 | 备注 |
+|---|---|---|
+| Neon | 控制台首页的 Connection string | 走 HTTP 驱动，不需要连接池 |
+| Supabase | Settings → Database → **Transaction pooler**（6543） | 直连 5432 也能用，serverless 下容易耗尽连接 |
+| CockroachDB | 集群的 `postgresql://...` | 带 `?sslmode=require` |
+| Xata（Postgres） | 数据库的 Postgres 连接串 | — |
+| Prisma Postgres | **Pooled** 连接串（`pooled.db.prisma.io`） | 直连串留给迁移 |
+| Railway / Render / 自建 | 你自己的 `postgresql://` | — |
 
-```
-postgresql://user:pass@ep-xxx.aws.neon.tech/neondb?sslmode=require
-```
+Neon 注册用 GitHub 登录，新建项目挑个近的区域，复制 Dashboard 首页那串 `postgresql://...` 就行，免费档够用。其它库大多强制 TLS，把 `sslmode=require` 带上。
 
-免费档够用。这串就是后面要填的 `DATABASE_URL`。
+**不支持：PlanetScale（MySQL）、Turso（SQLite）、MongoDB Atlas（文档库）。** 现有 schema 和几百条查询全是 PostgreSQL 方言，这三家不是同一个协议/模型，接不了——要用得另做一套数据层。
+
+`DB_PROVIDER` 一般不用填：连接串是 `*.neon.tech` 就走 Neon HTTP，其余自动走标准 PG 协议。只有 Neon 配了自定义域名时才需要写 `DB_PROVIDER=neon`。
+
+非 Neon 的库建议在 Cloudflare 控制台建一个 **Hyperdrive**，把绑定加到 `wrangler.toml`（见文件里的注释）。不配也能跑，但每个 isolate 只有 1 条连接、新连接要重做 TCP+TLS+认证，冷启动会慢一些。
 
 ## 2. 一键部署
 

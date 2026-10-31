@@ -27,7 +27,7 @@
  */
 import type { Env } from '../env';
 import { kvFor } from '../lib/kvRouter';
-import { auditDomainUrl, metadataDomainUrl, sqlForUrl } from './index';
+import { auditDomainUrl, metadataDomainUrl, primaryRuntimeUrl, sqlForUrl } from './index';
 import { clearDomainDown, persistDomainDown } from './shard';
 import type { Sql } from './index';
 
@@ -163,7 +163,8 @@ async function ensureDomain(
 }
 
 function primaryUrlOf(env: Env): string {
-  const url = (env as unknown as Record<string, string | undefined>).DATABASE_URL?.trim();
+  // 绑了 Hyperdrive 时运行时主库是它的本地地址；分域迁移也要落在同一个库上。
+  const url = primaryRuntimeUrl(env);
   if (!url) throw new Error('DATABASE_URL is not configured');
   return url;
 }

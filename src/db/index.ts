@@ -1,24 +1,112 @@
 /**
- * Neon (PostgreSQL) 访问层。
+ * PostgreSQL 访问层（多驱动）。
  *
- * 用 `@neondatabase/serverless` 的 HTTP 驱动，在 Workers 里无需 TCP 连接池，
- * 每次查询就是一次 fetch。注意两点与本地 Postgres 驱动的差异：
+ * 两套驱动、同一套 SQL 与迁移：
+ *   - Neon：`@neondatabase/serverless` 的 HTTP 驱动，一次查询一次 fetch；
+ *   - 其它 PostgreSQL（Supabase / CockroachDB / Xata / Prisma Postgres /
+ *     Railway / Render / 自建）：postgres.js 的 `workerd` 构建，走线协议。
  *
- *   1. BIGINT 通过 HTTP 以 **字符串** 返回（避免 JSON 精度丢失），
- *      所有读取路径都要过 `toNum()`。
- *   2. BYTEA 返回 **十六进制字符串**（`\x0102` 形式）。
- *      所有读取路径都要过 `toBytes()`。
+ * 驱动返回格式有差异，读取路径统一过 `toNum()` / `toBytes()`：
+ *   1. BIGINT 可能以 **字符串** 返回（避免 JSON 精度丢失）；
+ *   2. BYTEA 可能是十六进制字符串（`\x0102`）或 Uint8Array。
  */
-import { neon, neonConfig, type NeonQueryFunction } from '@neondatabase/serverless';
+import { neon, neonConfig } from '@neondatabase/serverless';
+import { buildPgSql, createPgClient } from './pgSql';
 import type { Env } from '../env';
 
 /**
- * Neon 查询函数。
+ * 支持的数据库驱动。
  *
- * 多库模式下这个对象本身就是「数据库句柄」：`db/repo.ts` 不再接收 `env`
- * 而是接收它，`assertSameSql()` 靠引用相等拒绝跨库混用。
+ *   - `neon`：`@neondatabase/serverless` 的 HTTP 驱动，一次查询一次 fetch，
+ *     无需连接池，是 Neon 上最快的路径（也是本项目原本的行为）。
+ *   - `postgres`：postgres.js（有专门的 `workerd` 构建），走标准 PostgreSQL
+ *     线协议。Supabase / CockroachDB / Xata（Postgres）/ Prisma Postgres /
+ *     Railway / Render / 自建 Postgres 都用它。
+ *
+ * 两者共用同一套 SQL 与迁移 —— 整个数据层是 PostgreSQL 方言，换驱动不改查询。
  */
-export type Sql = NeonQueryFunction<false, false>;
+export type DbProvider = 'neon' | 'postgres';
+
+/**
+ * 单条查询：可 `await`，PG 适配层还额外携带 `text` / `values` 供事务复用。
+ *
+ * 结构上兼容 Neon 的 `NeonQueryPromise`，所以 repo 里的
+ * `await this.sql\`...\`` 与 `sql.transaction([...])` 都不用改。
+ */
+export interface SqlQuery<T = Record<string, unknown>> extends Promise<T[]> {
+  readonly text?: string;
+  readonly values?: readonly unknown[];
+}
+
+/**
+ * 数据库句柄。
+ *
+ * `db/repo.ts` 不接收 `env` 而是接收它，`assertSameSql()` 靠引用相等
+ * 拒绝跨库混用。
+ */
+export interface Sql {
+  <T = Record<string, unknown>>(
+    strings: TemplateStringsArray,
+    ...values: unknown[]
+  ): SqlQuery<T>;
+  <T = Record<string, unknown>>(text: string, values?: readonly unknown[]): SqlQuery<T>;
+  transaction<T = Record<string, unknown>>(queries: readonly SqlQuery<T>[]): Promise<T[][]>;
+}
+
+// ---------------------------------------------------------------------------
+// 驱动选择
+// ---------------------------------------------------------------------------
+
+let defaultProvider: DbProvider | null = null;
+
+/** 当前运行环境选定的驱动（由 getSql / resolveDb 设置）。 */
+export function setDefaultProvider(provider: DbProvider): void {
+  defaultProvider = provider;
+}
+
+function providerFromEnv(): DbProvider | null {
+  const g = globalThis as unknown as { process?: { env?: Record<string, string | undefined> } };
+  const v = (g.process?.env?.DB_PROVIDER ?? '').trim().toLowerCase();
+  if (v === 'neon') return 'neon';
+  if (v === 'postgres') return 'postgres';
+  return null;
+}
+
+/** 按 URL 猜测驱动：Neon 的域名走 HTTP，其余一律走标准 PG 协议。 */
+export function providerOfUrl(url: string): DbProvider {
+  return (
+    defaultProvider ??
+    providerFromEnv() ??
+    (/neon\.tech|neon\.build/i.test(url) ? 'neon' : 'postgres')
+  );
+}
+
+/**
+ * 解析本次部署该用哪个驱动。
+ *
+ * 优先级：显式 `DB_PROVIDER` > 绑定了 Hyperdrive（走 postgres）> URL 域名。
+ * 现有 Neon 部署不配任何新变量，仍然走 neon，行为完全不变。
+ */
+export function resolveProvider(env: Env): DbProvider {
+  const explicit = (env.DB_PROVIDER ?? '').trim().toLowerCase();
+  if (explicit === 'neon') return 'neon';
+  if (explicit === 'postgres') return 'postgres';
+  if (env.HYPERDRIVE?.connectionString) return 'postgres';
+  const url = primaryDatabaseUrl(env) ?? '';
+  return /neon\.tech|neon\.build/i.test(url) ? 'neon' : 'postgres';
+}
+
+/**
+ * 运行时主库连接串：绑了 Hyperdrive 就用它的本地地址（边缘连接池），
+ * 否则用 `DATABASE_URL`。迁移/种子脚本仍然读 `DATABASE_URL`。
+ */
+export function primaryRuntimeUrl(env: Env): string | undefined {
+  if (resolveProvider(env) === 'postgres') {
+    const hyper = env.HYPERDRIVE?.connectionString?.trim();
+    if (hyper) return hyper;
+  }
+  return primaryDatabaseUrl(env);
+}
 
 /** 连接串秘密名 → 部署页展示用。下标 1 是主库。 */
 const DB_SECRET_NAMES = [
@@ -42,13 +130,21 @@ export const MAX_DATABASES = 5;
 const clients = new Map<string, Sql>();
 
 /** 取指定连接串的客户端（带缓存）。不做任何可用性判断。 */
-export function sqlForUrl(url: string): Sql {
-  const cached = clients.get(url);
+export function sqlForUrl(url: string, provider?: DbProvider): Sql {
+  const p = provider ?? providerOfUrl(url);
+  const key = `${p}\u0000${url}`;
+  const cached = clients.get(key);
   if (cached) return cached;
   if (!url) throw new Error('数据库连接串为空');
-  installRetryingFetch();
-  const sql = neon(url);
-  clients.set(url, sql);
+
+  let sql: Sql;
+  if (p === 'neon') {
+    installRetryingFetch();
+    sql = neon(url) as unknown as Sql;
+  } else {
+    sql = buildPgSql(createPgClient(url));
+  }
+  clients.set(key, sql);
   return sql;
 }
 
@@ -136,9 +232,11 @@ export function failoverEnabled(env: Env): boolean {
  * 不需要按库分别安装。
  */
 export function getSql(env: Env): Sql {
-  const url = primaryDatabaseUrl(env);
+  const provider = resolveProvider(env);
+  const url = primaryRuntimeUrl(env);
   if (!url) throw new Error('DATABASE_URL is not configured');
-  return sqlForUrl(url);
+  setDefaultProvider(provider);
+  return sqlForUrl(url, provider);
 }
 
 /**
