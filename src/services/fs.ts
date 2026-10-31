@@ -15,6 +15,37 @@ import { FileSystemType, URI, validateName } from './uri';
 import type { ExplorerView, FileRow, MetadataRow, StoragePolicyRow } from '../db/types';
 import { BooleanSet, EntityType, FileType, GroupPermission, PolicyType } from '../lib/boolset';
 import { isPolicyTypeSupported } from '../storage';
+import { generateSavePath, extOf } from './savepath';
+
+/** 转移文件时按扩展名推导一个 content-type（实体表不存 mime，旧对象读回时也只能靠文件名推）。 */
+function extToMime(name: string): string {
+  const ext = extOf(name).toLowerCase();
+  const map: Record<string, string> = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.svg': 'image/svg+xml',
+    '.bmp': 'image/bmp',
+    '.mp4': 'video/mp4',
+    '.mov': 'video/quicktime',
+    '.webm': 'video/webm',
+    '.mp3': 'audio/mpeg',
+    '.wav': 'audio/wav',
+    '.pdf': 'application/pdf',
+    '.txt': 'text/plain',
+    '.html': 'text/html',
+    '.json': 'application/json',
+    '.zip': 'application/zip',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xls': 'application/vnd.ms-excel',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  };
+  return map[ext] ?? 'application/octet-stream';
+}
+
 
 /**
  * 文件系统能力位。位序**严格对齐**上游 `pkg/filemanager/fs/dbfs/navigator.go`
@@ -1017,7 +1048,12 @@ export class FileSystemService {
   async create(
     uri: URI,
     type: 'file' | 'folder',
-    options: { metadata?: Record<string, string>; errOnConflict?: boolean } = {},
+    options: {
+      metadata?: Record<string, string>;
+      errOnConflict?: boolean;
+      /** 显式指定上传策略（属主在组策略集内自选）。不传则继承父目录绑定的策略，再回落组默认。 */
+      policyId?: number;
+    } = {},
   ): Promise<FileResponse> {
     const user = this.ctx.requireUser();
     if (uri.fsType !== FileSystemType.My) {
@@ -1045,7 +1081,20 @@ export class FileSystemService {
       throw new AppError(40016, 'Parent is not a folder');
     }
 
-    const policy = await this.ctx.resolvePolicy(null);
+    // 策略选择优先级：① 用户显式指定（必须属组策略集）② 父目录绑定的策略（Pro 目录级策略）
+    // ③ 组默认/用户偏好。前两者都需通过组策略集校验，越界回落到默认链。
+    let policy: StoragePolicyRow;
+    if (options.policyId != null) {
+      policy = await this.ctx.assertPolicyAllowed(options.policyId);
+    } else if (parent.storage_policy_files != null) {
+      try {
+        policy = await this.ctx.assertPolicyAllowed(parent.storage_policy_files);
+      } catch {
+        policy = await this.ctx.resolvePolicy(null);
+      }
+    } else {
+      policy = await this.ctx.resolvePolicy(null);
+    }
 
     // 「保存到我的网盘」的落点：前端用 `POST /file/create` 建一个目录，并在 metadata 里
     // 带 `sys:shared_redirect` 指向分享 URI；服务端据此把它标成**符号目录**
@@ -1246,6 +1295,124 @@ export class FileSystemService {
     }
 
     return created;
+  }
+
+  // -------------------------------------------------------------------------
+  // 策略间转移文件（Pro：在不同存储策略之间搬动物理对象）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 把文件/目录的物理对象从当前策略搬到目标策略（Pro 功能）。
+   *
+   * 与 `updateStoragePolicy`（只改 DB 列、不搬 blob）不同，这里是**真实转移**：
+   * 从旧后端 `get` 对象 → `generateSavePath` 生成新键 → 往新后端 `put` → 更新实体
+   * `source` + 策略归属、文件 `storage_policy_files` → 删除旧对象。文件夹递归处理其子项。
+   *
+   * 目标策略必须属于当前用户组的策略集（`assertPolicyAllowed`），越界抛 40035。
+   */
+  async transferPolicy(uris: URI[], policyId: number): Promise<void> {
+    const user = this.ctx.requireUser();
+    const newPolicy = await this.ctx.assertPolicyAllowed(policyId);
+
+    for (const uri of uris) {
+      const file = await this.mustResolve(uri);
+      if (this.isRootFolder(file)) throw new AppError(CodeRootProtected, 'Cannot transfer root folder');
+      this.assertOwner(file, user.id);
+      await this.transferOne(file, newPolicy, user.id);
+    }
+  }
+
+  /**
+   * Pro：绑定文件/目录的存储策略（只改 `storage_policy_files` 归属，不搬动已有对象）。
+   * 目录绑定后即成为其「默认策略」，新建子项会继承（见 `create`）。
+   */
+  async bindPolicy(uris: URI[], policyId: number): Promise<number> {
+    const user = this.ctx.requireUser();
+    const policy = await this.ctx.assertPolicyAllowed(policyId);
+    let n = 0;
+    for (const uri of uris) {
+      const file = await this.mustResolve(uri);
+      if (this.isRootFolder(file)) throw new AppError(CodeRootProtected, 'Cannot bind policy to root folder');
+      this.assertOwner(file, user.id);
+      await this.ctx.files.updateStoragePolicy(file.id, policy.id);
+      n++;
+    }
+    return n;
+  }
+
+  private async transferOne(file: FileRow, newPolicy: StoragePolicyRow, uid: number): Promise<void> {
+    if (file.type === FileType.Folder) {
+      const children = await this.ctx.files.list({
+        parentId: file.id,
+        ownerId: null,
+        page: 0,
+        pageSize: 10000,
+        orderBy: 'name',
+        orderDirection: 'asc',
+      });
+      for (const child of children.files) {
+        await this.transferOne(child, newPolicy, uid);
+      }
+      // 目录本身只改「默认策略绑定」，不持有物理对象
+      await this.ctx.files.updateStoragePolicy(file.id, newPolicy.id);
+      return;
+    }
+
+    const entityId = file.primary_entity;
+    if (!entityId) {
+      // 没有内容实体（异常态）只改策略归属
+      await this.ctx.files.updateStoragePolicy(file.id, newPolicy.id);
+      return;
+    }
+
+    const entity = await this.ctx.entities.byId(entityId);
+    if (!entity) {
+      await this.ctx.files.updateStoragePolicy(file.id, newPolicy.id);
+      return;
+    }
+
+    const oldPolicy = await this.ctx.policies.byId(file.storage_policy_files ?? newPolicy.id);
+    if (!oldPolicy || oldPolicy.id === newPolicy.id) {
+      // 源策略未知或与目标相同：只改归属，不搬对象
+      await this.ctx.files.updateStoragePolicy(file.id, newPolicy.id);
+      return;
+    }
+
+    const oldDriver = this.ctx.driverFor(oldPolicy);
+    const newDriver = this.ctx.driverFor(newPolicy);
+
+    const content = await oldDriver.get(entity.source, null);
+    if (!content) {
+      // 旧对象读不到（已丢失/驱动不支持）：仍把归属切到新策略，避免卡死
+      await this.ctx.entities.updateSource(entity.id, entity.source, newPolicy.id);
+      await this.ctx.files.updateStoragePolicy(file.id, newPolicy.id);
+      return;
+    }
+
+    const savePath = generateSavePath(newPolicy, {
+      uid,
+      originName: file.name,
+      originPath: '',
+    });
+
+    const mime = extToMime(file.name);
+    await newDriver.put(
+      { savePath, fileName: file.name, size: content.size, mimeType: mime, overwrite: false },
+      content.body,
+      content.size,
+    );
+
+    // 先在新后端落盘成功，再切实体指针与文件归属，最后删旧的
+    await this.ctx.entities.updateSource(entity.id, savePath, newPolicy.id);
+    await this.ctx.files.updateStoragePolicy(file.id, newPolicy.id);
+    await oldDriver.delete([entity.source]).catch(() => {});
+
+    logAudit(this.ctx, 'file_transfer', uid, {
+      name: file.name,
+      from: oldPolicy.id,
+      to: newPolicy.id,
+    });
+    notifyFsEvent(this.ctx, file, 'modify', file.name, file.name);
   }
 
   // -------------------------------------------------------------------------

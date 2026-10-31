@@ -75,6 +75,7 @@ export const AUDIT_LOG_TYPES = {
   oauth_grant_create: 59,
   oauth_token_exchange: 60,
   oauth_grant_revoke: 61,
+  file_transfer: 62,
 } as const;
 
 export type AuditLogTypeName = keyof typeof AUDIT_LOG_TYPES;

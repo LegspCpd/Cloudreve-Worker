@@ -1419,6 +1419,18 @@ export class EntityRepo {
     }
   }
 
+  /**
+   * 策略间转移文件时更新实体的物理键与策略归属（一次更新两列，避免中间态被并发读走）。
+   * 仅改实体本身，不搬动 blob —— 调用方负责先把对象从旧后端 `get` 再往新后端 `put`，
+   * 成功后再调本方法并删除旧对象。见 `FileSystemService.transferPolicy`。
+   */
+  async updateSource(id: number, source: string, policyId: number): Promise<void> {
+    await this.sql`
+      UPDATE entities SET source = ${source}, storage_policy_entities = ${policyId}, updated_at = now()
+      WHERE id = ${id}
+    `;
+  }
+
   async clearUploadSession(id: number): Promise<void> {
     await this.sql`
       UPDATE entities SET upload_session_id = NULL, updated_at = now() WHERE id = ${id}

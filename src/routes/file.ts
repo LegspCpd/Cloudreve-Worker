@@ -47,7 +47,7 @@ import { ZipError } from '../lib/zipread';
 import { drain, nameDecoder } from '../services/workflow';
 import { URI } from '../services/uri';
 import { FileType } from '../lib/boolset';
-import { AppError, CodeFeatureNotEnabled, CodeNotFound, Err } from '../lib/errors';
+import { AppError, CodeFeatureNotEnabled, CodeNotFound, CodeRootProtected, Err } from '../lib/errors';
 import { attachmentDisposition } from '../lib/disposition';
 import { throttleStream } from '../lib/throttle';
 import { sseClientId } from '../lib/sse';
@@ -181,6 +181,8 @@ fileRoutes.post('/create', async (c) => {
     type?: string;
     metadata?: Record<string, string>;
     err_on_conflict?: boolean;
+    /** Pro：显式指定上传策略（属主在组策略集内自选）。不传则继承父目录绑定策略。 */
+    policy_id?: number;
   };
   if (!body.uri || !body.type) return fail(c, Err.param('uri and type are required'));
   if (body.type !== 'file' && body.type !== 'folder') {
@@ -190,6 +192,7 @@ fileRoutes.post('/create', async (c) => {
     const res = await new FileSystemService(ctx).create(URI.parse(body.uri), body.type, {
       metadata: body.metadata,
       errOnConflict: body.err_on_conflict,
+      policyId: body.policy_id,
     });
     return ok(c, res);
   } catch (e) {
@@ -207,6 +210,60 @@ fileRoutes.post('/rename', async (c) => {
   try {
     const res = await new FileSystemService(ctx).rename(URI.parse(body.uri), body.new_name);
     return ok(c, res);
+  } catch (e) {
+    return fail(c, e);
+  }
+});
+
+/**
+ * Pro：为文件/目录绑定存储策略。
+ * - 目录：设为该目录的「默认策略」，其下新建文件会继承（见 FileSystemService.create）。
+ * - 文件：只改 `storage_policy_files` 归属，不搬动已有对象（需搬对象用 /file/transfer）。
+ * 目标策略必须属于当前用户组的策略集，越界抛 40035。
+ */
+fileRoutes.post('/policy', async (c) => {
+  const ctx = ctxOf(c);
+  if (!ctx.user) return fail(c, Err.loginRequired());
+  const body = (await c.req.json().catch(() => ({}))) as { uris?: string[]; policy_id?: number };
+  if (!body.uris?.length || body.policy_id == null) {
+    return fail(c, Err.param('uris and policy_id are required'));
+  }
+  if (body.uris.length > ctx.settings.maxBatchedFile) {
+    return fail(c, new AppError(40074, 'Too many uris'));
+  }
+  try {
+    const service = new FileSystemService(ctx);
+    const updated = await service.bindPolicy(
+      body.uris.map((u) => URI.parse(u)),
+      body.policy_id,
+    );
+    return ok(c, { updated, policy_id: body.policy_id });
+  } catch (e) {
+    return fail(c, e);
+  }
+});
+
+/**
+ * Pro：把文件/目录的物理对象转移到目标存储策略（真实搬 blob）。
+ * 与 /file/policy 不同，这里会跨后端读旧对象、写新后端、删旧的。
+ */
+fileRoutes.post('/transfer', async (c) => {
+  const ctx = ctxOf(c);
+  if (!ctx.user) return fail(c, Err.loginRequired());
+  const body = (await c.req.json().catch(() => ({}))) as { uris?: string[]; policy_id?: number };
+  if (!body.uris?.length || body.policy_id == null) {
+    return fail(c, Err.param('uris and policy_id are required'));
+  }
+  if (body.uris.length > ctx.settings.maxBatchedFile) {
+    return fail(c, new AppError(40074, 'Too many uris'));
+  }
+  try {
+    const service = new FileSystemService(ctx);
+    await service.transferPolicy(
+      body.uris.map((u) => URI.parse(u)),
+      body.policy_id,
+    );
+    return ok(c, { transferred: body.uris.length, policy_id: body.policy_id });
   } catch (e) {
     return fail(c, e);
   }
