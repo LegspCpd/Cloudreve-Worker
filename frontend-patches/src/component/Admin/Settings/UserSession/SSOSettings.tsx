@@ -143,12 +143,14 @@ const SSOSettings = () => {
             </FormControl>
             <FormControl fullWidth>
               <DenseFilledTextField
-                value={`${window.location.origin}/session/oidc/callback`}
+                value={`${window.location.origin}/api/v4/session/oidc/callback`}
                 label={"回调地址（Callback URL）"}
                 slotProps={{ input: { readOnly: true } }}
               />
               <NoMarginHelperText>
                 请把该地址填入身份提供方的回调白名单（Redirect URI）。
+                必须带 <code>/api/v4</code> 前缀 —— 这是后端换取 token 的端点，
+                与前端页面路由 <code>/session/oidc/callback</code> 不是同一个。
               </NoMarginHelperText>
             </FormControl>
           </Stack>
@@ -223,12 +225,13 @@ const SSOSettings = () => {
             </FormControl>
             <FormControl fullWidth>
               <DenseFilledTextField
-                value={`${window.location.origin}/session/qq/callback`}
+                value={`${window.location.origin}/api/v4/session/qq/callback`}
                 label={"回调地址（Callback URL）"}
                 slotProps={{ input: { readOnly: true } }}
               />
               <NoMarginHelperText>
-                请把该地址填入 QQ 互联开放平台应用的回调白名单（Redirect URI）。
+                请把该地址填入 QQ 互联开放平台应用的回调白名单。必须带{" "}
+                <code>/api/v4</code> 前缀，否则 QQ 会报 redirect_uri 不一致（100010）。
               </NoMarginHelperText>
             </FormControl>
           </Stack>

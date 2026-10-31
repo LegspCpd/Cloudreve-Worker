@@ -64,6 +64,10 @@ export interface OidcConfig {
 /** 构造本站 OIDC 回调地址。 */
 export function oidcRedirectUri(ctx: AppContext): string {
   const base = ctx.settings.siteUrl.replace(/\/+$/, '');
+  // 没配站点地址时拼出的是相对路径，IdP 侧会判 redirect_uri 非法
+  if (!base) {
+    throw new AppError(CodeParamErr, 'Site URL is not configured (admin → 站点信息 → 站点地址)');
+  }
   return `${base}/api/v4/session/oidc/callback`;
 }
 

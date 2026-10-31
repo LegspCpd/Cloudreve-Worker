@@ -64,6 +64,11 @@ export interface QqConfig {
 /** 构造本站 QQ 回调地址（需填进 QQ 互联后台的回调白名单）。 */
 export function qqRedirectUri(ctx: AppContext): string {
   const base = ctx.settings.siteUrl.replace(/\/+$/, '');
+  // 站点地址没配时拼出来的是相对路径，QQ 侧会直接判 redirect_uri 非法。
+  // 这里提前给出可诊断的错误，而不是让用户在 QQ 的错误页上猜。
+  if (!base) {
+    throw new AppError(CodeParamErr, 'Site URL is not configured (admin → 站点信息 → 站点地址)');
+  }
   return `${base}/api/v4/session/qq/callback`;
 }
 
