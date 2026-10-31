@@ -99,10 +99,11 @@ try {
     outfile: bundlePath,
     logLevel: 'silent',
   });
-  const { UserRepo, FileRepo } = await import(`file://${bundlePath}`);
+  const { UserRepo, FileRepo, EntityRepo } = await import(`file://${bundlePath}`);
   const sql = makeSql(db);
   const users = new UserRepo(sql);
   const filesRepo = new FileRepo(sql);
+  const entitiesRepo = new EntityRepo(sql);
 
   // 种子：一个组 + 一个用户
   await db.exec(`INSERT INTO groups (id, name, max_storage, permissions) VALUES (1, '默认', 1000, '\\x00') ON CONFLICT DO NOTHING`);
@@ -252,6 +253,68 @@ try {
     [shareRow.id, uid],
   );
   check('重复插入被唯一约束挡住', p2.length === 0);
+
+  // -------------------------------------------------------------------------
+  // [10] reserveStorage：并发预占不会超额
+  // -------------------------------------------------------------------------
+  console.log('\n[10] 容量预占不超额');
+  await db.query(`UPDATE users SET storage = 0 WHERE id = $1`, [uid]);
+  const LIMIT = 1000;
+  const r1 = await users.reserveStorage(uid, 600, LIMIT);
+  check('预占 600 成功', r1 === true);
+  const r2 = await users.reserveStorage(uid, 600, LIMIT);
+  check('再预占 600 失败（会超 1000）', r2 === false);
+  let used = Number((await db.query(`SELECT storage FROM users WHERE id = $1`, [uid])).rows[0].storage);
+  check('已用仍是 600，没被失败的预占污染', used === 600, String(used));
+  const r3 = await users.reserveStorage(uid, 400, LIMIT);
+  check('预占 400 刚好到上限', r3 === true);
+  used = Number((await db.query(`SELECT storage FROM users WHERE id = $1`, [uid])).rows[0].storage);
+  check('已用 1000', used === 1000, String(used));
+  const r4 = await users.reserveStorage(uid, 1, LIMIT);
+  check('上限处再预占 1 字节失败', r4 === false);
+  // maxTotal 为 null（不限量）时一律成功
+  const r5 = await users.reserveStorage(uid, 999999, null);
+  check('不限量时预占成功', r5 === true);
+
+  // -------------------------------------------------------------------------
+  // [11] 实体引用计数：最后一个引用释放才允许删对象
+  // -------------------------------------------------------------------------
+  console.log('\n[11] 实体引用计数');
+  await db.exec(`INSERT INTO storage_policies (id, name, type) VALUES (1, 'test', 'local') ON CONFLICT DO NOTHING`);
+  const ent = await entitiesRepo.create({
+    type: 0,
+    source: 'objects/a.bin',
+    size: 10,
+    policyId: 1,
+    createdBy: uid,
+  });
+  check('新建实体引用计数为 1', Number(ent.reference_count) === 1, String(ent.reference_count));
+  // 复制：多一个文件共用同一实体
+  await entitiesRepo.retain([ent.id]);
+  let rc = Number(
+    (await db.query(`SELECT reference_count FROM entities WHERE id = $1`, [ent.id])).rows[0]
+      .reference_count,
+  );
+  check('retain 后为 2', rc === 2, String(rc));
+  // 删掉一个引用
+  let garbage = await entitiesRepo.release([ent.id]);
+  check('还留着引用时不算垃圾', garbage.length === 0);
+  // 删掉最后一个引用
+  garbage = await entitiesRepo.release([ent.id]);
+  check('最后一个引用释放后进入待删列表', garbage.length === 1);
+  rc = Number(
+    (await db.query(`SELECT reference_count FROM entities WHERE id = $1`, [ent.id])).rows[0]
+      .reference_count,
+  );
+  check('计数归零（不会被减成负数）', rc === 0, String(rc));
+  // 再释放一次：计数已 0，不该再产出「可删除」，否则并发 purge 会删两次对象
+  garbage = await entitiesRepo.release([ent.id]);
+  check('计数已 0 时再释放不产出垃圾（防重复删对象）', garbage.length === 0);
+  rc = Number(
+    (await db.query(`SELECT reference_count FROM entities WHERE id = $1`, [ent.id])).rows[0]
+      .reference_count,
+  );
+  check('计数没有变成 -1', rc === 0, String(rc));
 } catch (e) {
   failed += 1;
   console.error('\n  ERROR', e instanceof Error ? e.message : e);

@@ -1622,14 +1622,21 @@ export class EntityRepo {
     }
   }
 
-  /** 减少引用计数，返回引用归零、可以真正删除的实体。 */
+  /**
+   * 减少引用计数，返回引用**刚刚**归零、可以真正删除的实体。
+   *
+   * `WHERE reference_count > 0` 不是多余的：并发 purge（用户连点、或两个
+   * 请求删同一批文件）会让同一个实体被 release 两次。没有这个条件时第二次
+   * 也会返回「可删除」，于是同一个存储对象被删两次 —— 如果对象键已被新文件
+   * 复用，就把别人的数据删了。带上条件后第二次不匹配、返回空。
+   */
   async release(ids: number[]): Promise<EntityRow[]> {
     const toDelete: EntityRow[] = [];
     for (const id of ids) {
       const rows = (await this.sql`
         UPDATE entities
-        SET reference_count = GREATEST(0, reference_count - 1), updated_at = now()
-        WHERE id = ${id}
+        SET reference_count = reference_count - 1, updated_at = now()
+        WHERE id = ${id} AND reference_count > 0
         RETURNING *
       `) as Record<string, unknown>[];
       const row = rows[0];
