@@ -243,9 +243,38 @@ function patchIndexHtml() {
  */
 const SELF_HEAL_SCRIPT = `/* __edge_self_heal */
 (function () {
-  if (!('serviceWorker' in navigator) || !navigator.serviceWorker.getRegistration) return;
   var KEY = 'edge:selfheal';
-  if (sessionStorage.getItem(KEY) === '1') return;
+
+  // 分片加载失败：部署换了前端后，老页面里的入口仍指向已被删除的 chunk；
+  // 加上 Assets 的 SPA 回落会把 index.html 当成 JS 返回，动态 import 直接报
+  // "Failed to fetch dynamically imported module"。这里注销 Service Worker、
+  // 清空 Cache Storage，再整页重载一次，拿到新的 index.html 和当前构建的分片。
+  // sessionStorage 兜底，只自愈一次，避免死循环。
+  function heal() {
+    if (sessionStorage.getItem(KEY) === '1') return;
+    sessionStorage.setItem(KEY, '1');
+    var reload = function () { location.reload(); };
+    var clearCaches = function () {
+      if (!('caches' in window)) { reload(); return; }
+      caches.keys().then(function (keys) {
+        return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+      }).then(reload, reload);
+    };
+    if (!('serviceWorker' in navigator) || !navigator.serviceWorker.getRegistrations) {
+      clearCaches();
+      return;
+    }
+    navigator.serviceWorker.getRegistrations().then(function (regs) {
+      return Promise.all(regs.map(function (r) { return r.unregister(); }));
+    }).then(clearCaches, clearCaches);
+  }
+
+  window.addEventListener('vite:preloadError', function (e) {
+    if (e && e.preventDefault) e.preventDefault();
+    heal();
+  });
+
+  if (!('serviceWorker' in navigator) || !navigator.serviceWorker.getRegistration) return;
   setTimeout(function () {
     var root = document.getElementById('root');
     if (root && root.childElementCount > 0) return; // 应用正常起来了
