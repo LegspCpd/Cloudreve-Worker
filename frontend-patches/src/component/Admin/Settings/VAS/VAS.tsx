@@ -598,6 +598,35 @@ const VAS = () => {
         </SettingSectionContent>
       </SettingSection>
 
+      {/* ---------------- 站点公告 / 新用户初始文件夹 ---------------- */}
+      <SettingSection>
+        <SettingSectionContent>
+          <Stack spacing={2}>
+            <TextField
+              fullWidth
+              multiline
+              minRows={2}
+              label="站点公告"
+              placeholder="留空则不显示"
+              value={text("announcement")}
+              onChange={setText("announcement")}
+            />
+            <TextField
+              fullWidth
+              multiline
+              minRows={2}
+              label="新用户初始文件夹（JSON 数组）"
+              placeholder='["我的文档","我的图片","我的视频"]'
+              value={text("initial_files")}
+              onChange={setText("initial_files")}
+            />
+            <Typography variant="caption" color="text.secondary">
+              站点公告以纯文本展示在页面顶部横幅；初始文件夹需为合法 JSON 字符串数组，新用户注册时在其根目录创建。
+            </Typography>
+          </Stack>
+        </SettingSectionContent>
+      </SettingSection>
+
       {/* ---------------- 提供商编辑弹窗 ---------------- */}
       <Dialog open={!!providerDialog} onClose={() => setProviderDialog(null)} maxWidth="sm" fullWidth>
         <DialogTitle>编辑支付提供商（易支付）</DialogTitle>

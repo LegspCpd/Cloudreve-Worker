@@ -45,6 +45,9 @@ import { fail, ok } from '../lib/response';
 import { kvFor } from '../lib/kvRouter';
 import { UserService } from '../services/user';
 import { MailService } from '../services/mail';
+import { ShareService } from '../services/share';
+import { FileSystemService } from '../services/fs';
+import { type ShareReportStatus } from '../db/shareReport';
 import { BooleanSet, GroupPermission, PolicyType } from '../lib/boolset';
 import {
   AppError,
@@ -147,6 +150,42 @@ adminRoutes.post('/audit/log', async (c) => {
     })),
     pagination: paginationOf(page, pageSize, total),
   });
+});
+
+/**
+ * 分享举报列表（边缘版自建 Pro 功能）。按状态过滤（pending/resolved/ignored）；
+ * 不传 status 返回全部。page 为 1 基。
+ */
+adminRoutes.get('/share/report', async (c) => {
+  const ctx = ctxOf(c);
+  const page = Math.max(1, Number(c.req.query('page') ?? '1') || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(c.req.query('page_size') ?? '20') || 20));
+  const rawStatus = c.req.query('status');
+  const status = rawStatus === 'pending' || rawStatus === 'resolved' || rawStatus === 'ignored'
+    ? (rawStatus as ShareReportStatus)
+    : undefined;
+  const res = await new ShareService(ctx, new FileSystemService(ctx)).listReports(page, pageSize, status);
+  return ok(c, res);
+});
+
+/**
+ * 处理分享举报（边缘版自建 Pro 功能）。body: { status: 'resolved' | 'ignored' }。
+ * 其它值一律按忽略处理。
+ */
+adminRoutes.post('/share/report/:id', async (c) => {
+  const ctx = ctxOf(c);
+  const body = (await c.req.json().catch(() => ({}))) as { status?: string };
+  const status: ShareReportStatus = body.status === 'resolved' ? 'resolved' : 'ignored';
+  try {
+    await new ShareService(ctx, new FileSystemService(ctx)).resolveReport(
+      Number(c.req.param('id')),
+      status,
+      ctx.user!.id,
+    );
+    return ok(c);
+  } catch (e) {
+    return fail(c, e);
+  }
 });
 
 /**

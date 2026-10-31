@@ -487,6 +487,8 @@ siteRoutes.get('/config/:section', async (c) => {
         credit_enabled: s.getBool('credit_enabled', false),
         currency_code: s.get('currency_code', 'CNY'),
         currency_symbol: s.get('currency_symbol', '¥'),
+        // 站点公告（edge 自建 Pro 功能）：前端顶部横幅展示，留空不显示
+        announcement: s.get('announcement', ''),
         currency_unit: s.getInt('currency_unit', 100),
       }) as never;
   }

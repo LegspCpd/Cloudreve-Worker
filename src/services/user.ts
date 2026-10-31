@@ -12,7 +12,7 @@ import { AppContext } from './context';
 import { logAudit } from './audit';
 import { warmUserCache } from './userCache';
 import type { GroupRow, UserRow, UserWithGroup } from '../db/types';
-import { BooleanSet, GroupPermission } from '../lib/boolset';
+import { BooleanSet, FileType, GroupPermission } from '../lib/boolset';
 import {
   AppError,
   Code2FACodeErr,
@@ -507,6 +507,10 @@ export class UserService {
       this.ctx.groups.byId(effectiveGroupId),
     ]);
 
+    // 新用户初始文件夹（官方 Pro「新用户初始文件」的文件夹部分）：注册后在
+    // 根目录建一批默认文件夹。失败不阻断注册 —— 最坏情况是新用户少了默认文件夹。
+    await this.seedInitialFolders(user.id);
+
     logAudit(this.ctx, 'user_signup', user.id, { email: normalized });
     if (needActivation) {
       // 上游 `register.go:82-85`：发信失败时返回 `CodeNotSet` + 空 msg
@@ -516,6 +520,35 @@ export class UserService {
     }
     if (group) await warmUserCache(this.ctx.env, { ...user, group });
     return { kind: 'ok', user: await this.buildUserResponse(user, true, group) };
+  }
+
+  /**
+   * 新用户初始文件夹（官方 Pro「新用户初始文件」的文件夹部分）。
+   *
+   * 注册成功后，在用户根目录创建 `initial_files` 配置里的默认文件夹
+   * （JSON 字符串数组，元素为文件夹名）。重名自动跳过；任一创建失败只记日志、
+   * 不抛出，避免影响注册主流程。
+   */
+  private async seedInitialFolders(userId: number): Promise<void> {
+    const names = this.ctx.settings.getJson<string[]>('initial_files', []);
+    if (!Array.isArray(names) || names.length === 0) return;
+    try {
+      const root = await this.ctx.files.ensureRoot(userId);
+      for (const raw of names) {
+        const name = String(raw ?? '').trim();
+        if (!name) continue;
+        const dup = await this.ctx.files.childByName(root.id, name);
+        if (dup) continue;
+        await this.ctx.files.create({
+          type: FileType.Folder,
+          name,
+          ownerId: userId,
+          parentId: root.id,
+        });
+      }
+    } catch (e) {
+      console.error('seedInitialFolders failed', e);
+    }
   }
 
   // -------------------------------------------------------------------------

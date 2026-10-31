@@ -32,6 +32,11 @@ shareRoutes.use('*', async (c, next) => {
   const path = c.req.path.replace(/^\/api\/v4\/share/, '') || '/';
   if (path.startsWith('/purchase/')) return next();
   const ctx = ctxOf(c);
+  // 举报不需要 Shares.Write（举报的是别人的分享）；仅需登录
+  if (path.startsWith('/report/')) {
+    if (!ctx.user) return fail(c, Err.loginRequired());
+    return next();
+  }
   if (path.startsWith('/save/')) {
     if (!ctx.hasScopes(['Files.Write'])) return fail(c, Err.scopeInsufficient('Files.Write'));
     return next();
@@ -178,6 +183,19 @@ shareRoutes.post('/save/:id', async (c) => {
   try {
     await buildService(c).saveToMyFiles(c.req.param('id'), body.password ?? '', body.dst);
     return ok(c);
+  } catch (e) {
+    return fail(c, e);
+  }
+});
+
+/** 举报分享（edge 自建 Pro 功能）。需登录；同一用户对同一分享幂等。 */
+shareRoutes.post('/report/:id', async (c) => {
+  const ctx = ctxOf(c);
+  if (!ctx.user) return fail(c, Err.loginRequired());
+  const body = (await c.req.json().catch(() => ({}))) as { reason?: string; detail?: string };
+  try {
+    const res = await buildService(c).report(c.req.param('id'), body.reason ?? 'other', body.detail, ctx.user.id);
+    return ok(c, res);
   } catch (e) {
     return fail(c, e);
   }

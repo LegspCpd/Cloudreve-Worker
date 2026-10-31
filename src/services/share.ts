@@ -30,6 +30,7 @@ import {
 } from '../lib/errors';
 import { randomString } from '../lib/crypto';
 import { bumpShareEpoch } from '../lib/edgeCacheAuth';
+import { ShareReportRepo, type ShareReportStatus } from '../db/shareReport';
 
 export interface ShareCreateParams {
   uri: string;
@@ -710,5 +711,57 @@ export class ShareService {
 
     // 转存计入下载量
     await this.ctx.shares.incrementDownloads(share.id, 0);
+  }
+
+  // -------------------------------------------------------------------------
+  // 分享举报（edge 自建 Pro 功能）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 提交分享举报。同一用户对同一分享只允许一条 pending 举报（幂等：已有则直接返回）。
+   * 举报人不一定拥有该分享，所以只存分享 id，不校验归属。
+   */
+  async report(shareHashId: string, reason: string, detail: string | undefined, reporterId: number): Promise<{ id: number }> {
+    const shareId = this.ctx.codec.decodeShareID(shareHashId);
+    if (shareId == null) throw new AppError(CodeNotFound, 'Share not found');
+    const repo = new ShareReportRepo(this.ctx.env);
+    const existing = await repo.pendingByUser(shareId, reporterId);
+    if (existing) return { id: existing.id };
+    const row = await repo.create({
+      shareId,
+      reporterId,
+      reason: reason || 'other',
+      detail: detail ?? null,
+    });
+    logAudit(this.ctx, 'report_abuse', reporterId, { share_id: shareId, reason: row.reason });
+    return { id: row.id };
+  }
+
+  /** 管理端：分页列出举报（可按状态过滤）。 */
+  async listReports(page: number, pageSize: number, status?: ShareReportStatus) {
+    const repo = new ShareReportRepo(this.ctx.env);
+    const { items, total } = await repo.list(page, pageSize, status);
+    return {
+      reports: items.map((r) => ({
+        id: r.id,
+        share_id: this.ctx.codec.encodeShareID(r.share_id),
+        reporter_id: r.reporter_id ? this.ctx.codec.encodeUserID(r.reporter_id) : '',
+        reason: r.reason,
+        detail: r.detail,
+        status: r.status,
+        created_at: r.created_at.toISOString(),
+        handled_at: r.handled_at ? r.handled_at.toISOString() : null,
+      })),
+      pagination: { page: page - 1, pageSize, total },
+    };
+  }
+
+  /** 管理端：标记举报为已处理 / 忽略。 */
+  async resolveReport(id: number, status: ShareReportStatus, adminUserId: number): Promise<void> {
+    const repo = new ShareReportRepo(this.ctx.env);
+    const row = await repo.byId(id);
+    if (!row) throw new AppError(CodeNotFound, 'Report not found');
+    await repo.resolve(id, status, adminUserId);
+    logAudit(this.ctx, 'report_abuse', adminUserId, { report_id: id, status });
   }
 }

@@ -266,6 +266,13 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   storage_products: '[]',
   group_sell_data: '[]',
   credit_products: '[]',
+  // 站点公告（edge 自建 Pro 功能）：顶部横幅展示的纯文本（前端做 HTML 转义，不渲染标签）。
+  // 留空表示不显示公告。
+  announcement: '',
+  // 新用户初始文件夹（edge 自建 Pro 功能，对标官方「新用户初始文件」）：
+  // 注册时为新用户在根目录创建的默认文件夹，JSON 字符串数组，元素为文件夹名。
+  // 例：'["我的文档","我的图片","我的视频"]'。留空 "[]" 表示不创建。
+  initial_files: '[]',
   // 审计日志事件开关（管理端「事件」页）：JSON map 事件名 → bool，缺省视为 true。
   audit_log_events: '{}',
 };

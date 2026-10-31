@@ -9,6 +9,7 @@ import { useRegisterSW } from "virtual:pwa-register/react";
 import FileIconSnackbar from "./component/Common/Snackbar/FileIconSnackbar.tsx";
 import LoadingSnackbar from "./component/Common/Snackbar/LoadingSnackbar.tsx";
 import GlobalDialogs from "./component/Dialogs/GlobalDialogs.tsx";
+import AnnouncementBanner from "./component/Common/AnnouncementBanner.tsx";
 import { GrowDialogTransition } from "./component/FileManager/Search/SearchPopup.tsx";
 import Warning from "./component/Icons/Warning.tsx";
 import { useAppSelector } from "./redux/hooks.ts";
@@ -308,6 +309,7 @@ const AppContent = () => {
 
   return (
     <>
+      <AnnouncementBanner />
       <CssBaseline />
       <GlobalStyles
         styles={() => ({

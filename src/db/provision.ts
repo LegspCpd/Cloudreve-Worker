@@ -29,6 +29,7 @@ import m0011 from '../../migrations/0011_file_viewers.sql';
 import m0012 from '../../migrations/0012_file_viewers_backfill.sql';
 import m0013 from '../../migrations/0013_site_state.sql';
 import m0014 from '../../migrations/0014_rate_limits.sql';
+import m0015 from '../../migrations/0015_share_report.sql';
 import { withRetry } from './index';
 import { randomString } from '../lib/crypto';
 import { splitStatements } from '../lib/sql-split.mjs';
@@ -56,6 +57,8 @@ const MIGRATIONS: ReadonlyArray<readonly [name: string, sqlText: string]> = [
   ['0013_site_state.sql', m0013],
   // 0014：限速计数表（KV 的读最终一致，做不了计数器）
   ['0014_rate_limits.sql', m0014],
+  // 0015：分享举报表（edge 自建 Pro 功能）
+  ['0015_share_report.sql', m0015],
 ];
 
 /** KV 标记：值是最后一个已应用的迁移文件名，文件名不变就跳过。 */
