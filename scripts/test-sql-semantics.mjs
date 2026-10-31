@@ -443,6 +443,39 @@ try {
     });
     check('原目录里不再列出', !stillThere.files.some((f) => f.id === trashTarget.id));
     check('目录总数相应减少到 4', stillThere.total === 4, String(stillThere.total));
+
+  // -------------------------------------------------------------------------
+  // [14] 生成型设置的空值修复（ensureSettings 里的 toFix 语句）
+  //
+  // `secret_key` 空 = JWT 可伪造；`hash_id_salt` 空 = ID 可枚举。修复语句
+  // 必须只补「空值」的行，绝不能碰已经非空的（否则所有现存 ID/链接全部失效）。
+  // -------------------------------------------------------------------------
+  console.log('\n[14] 生成型设置空值修复');
+  // 迁移只建表不插默认值（DEFAULT_SETTINGS 由 ensureSettings 运行时写入），
+  // 先种出「siteID/secret_key 非空、hash_id_salt 被清空」的状态。
+  await db.query(
+    `INSERT INTO settings (name, value) VALUES ('siteID', 'site-123'), ('secret_key', 'sk-abc'), ('hash_id_salt', '')
+     ON CONFLICT (name) DO NOTHING`,
+  );
+  const before = (await db.query(`SELECT name, value FROM settings WHERE name IN ('siteID','secret_key','hash_id_salt')`)).rows;
+  const siteIdBefore = before.find((r) => r.name === 'siteID')?.value ?? '';
+  const secretBefore = before.find((r) => r.name === 'secret_key')?.value ?? '';
+
+  // 与 provider.ts 的 toFix 相同的语句
+  const fixNames = ['siteID', 'secret_key', 'hash_id_salt'];
+  for (const name of fixNames) {
+    const v = `random-${Math.random().toString(36).slice(2)}`;
+    await db.query(
+      `UPDATE settings SET value = $1, updated_at = now()
+       WHERE name = $2 AND (value IS NULL OR btrim(value) = '')`,
+      [v, name],
+    );
+  }
+  const after = (await db.query(`SELECT name, value FROM settings WHERE name IN ('siteID','secret_key','hash_id_salt')`)).rows;
+  const byName = new Map(after.map((r) => [r.name, r.value ?? '']));
+  check('空的 hash_id_salt 被补上随机值', (byName.get('hash_id_salt') ?? '').startsWith('random-'), byName.get('hash_id_salt'));
+  check('非空的 secret_key 原样保留', byName.get('secret_key') === secretBefore);
+  check('非空的 siteID 原样保留', byName.get('siteID') === siteIdBefore);
   }
 } catch (e) {
   failed += 1;

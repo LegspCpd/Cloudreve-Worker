@@ -11,7 +11,12 @@ import type { Env } from '../env';
 import { AppContext } from '../services/context';
 import { logAudit } from '../services/audit';
 import { MailService } from '../services/mail';
-import { consumePrefetchedSettings, loadSettings, type SettingsProvider } from '../settings/provider';
+import {
+  consumePrefetchedSettings,
+  ensureSettings,
+  loadSettings,
+  type SettingsProvider,
+} from '../settings/provider';
 import { HashIDCodec } from '../lib/hashid';
 import { JWTService, TokenHeaderPrefix, TokenHeaderPrefixCr } from '../lib/jwt';
 import type { UserWithGroup } from '../db/types';
@@ -120,6 +125,17 @@ export function appContext(): MiddlewareHandler<AppBindings> {
       settings = await loadSettings(env, db, waitUntil);
     }
     const settingsMs = performance.now() - startedAt;
+
+    // 生成型设置被清空时自愈（只多做两次 Map 命中，没有额外网络开销）：
+    //   - `secret_key` 空 → JWT 用空密钥签，任何人都能伪造管理员 token；
+    //   - `hash_id_salt` 空 → hashid 退化成无盐混淆，ID 可被离线枚举。
+    // 自举只在首次部署跑一次，之后被手工清空就没人管；这里发现就异步补一份
+    // 随机值。本次请求仍会因 `secretKey` 抛错而失败（宁可 500 也不能不安全），
+    // 但下一个请求就恢复正常。
+    if (!settings.get('secret_key') || !settings.get('hash_id_salt')) {
+      waitUntil(ensureSettings(env, db).catch(() => undefined));
+    }
+
     const codec = new HashIDCodec(settings.hashIdSalt);
     const jwt = new JWTService(settings.secretKey);
 

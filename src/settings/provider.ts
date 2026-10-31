@@ -137,9 +137,21 @@ export class SettingsProvider {
   }
   /** JWT 签名密钥：优先用 Worker 机密，其次用库里的 secret_key。 */
   get secretKey(): string {
-    return this.env.JWT_SECRET || this.get('secret_key');
+    const key = this.env.JWT_SECRET || this.get('secret_key');
+    // 空密钥 = 用空串签 JWT，**任何人都能伪造任意账号（含管理员）的 token**。
+    // 宁可让请求失败也不能跑在「看起来正常、实际谁都能登录」的状态里。
+    // 自举和 `ensureSettings` 都会补这个值（见 provider.ts 里的 toFix），
+    // 中间件在检测到空值时也会异步补一次。
+    if (!key) {
+      throw new Error(
+        'JWT secret is empty: settings.secret_key 与 JWT_SECRET 都没有值，拒绝用空密钥签名',
+      );
+    }
+    return key;
   }
   get hashIdSalt(): string {
+    // 空 salt 会让 hashid 退化成无盐混淆，ID 可被离线枚举。这里没有兜底值
+    // （任何固定兜底同样可预测），靠 ensureSettings 补随机值。
     return this.get('hash_id_salt');
   }
   get registerEnabled(): boolean {
@@ -412,24 +424,43 @@ export async function invalidateSettings(env: Env): Promise<void> {
  * 首次启动的自举：把缺失的设置键写入数据库，
  * 并为 siteID / secret_key / hash_id_salt 生成一次性的随机值。
  */
+/** 生成型设置项的随机值（只在缺失/为空时用）。 */
+function generatedSettingValue(key: string): string | null {
+  if (key === 'siteID') return crypto.randomUUID();
+  if (key === 'secret_key') return randomString(256);
+  if (key === 'hash_id_salt') return randomString(64);
+  return null;
+}
+
 export async function ensureSettings(env: Env, db: DbHandle = resolveDb(env)): Promise<void> {
   const sql = db.sql;
-  const rows = (await sql`SELECT name FROM settings WHERE deleted_at IS NULL`) as { name: string }[];
-  const existing = new Set(rows.map((r) => r.name));
+  const rows = (await sql`SELECT name, value FROM settings WHERE deleted_at IS NULL`) as {
+    name: string;
+    value: string | null;
+  }[];
+  const existing = new Map(rows.map((r) => [r.name, r.value ?? '']));
 
   const toInsert: { name: string; value: string }[] = [];
   for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
     if (existing.has(key)) continue;
-    let v = value;
-    if ((GENERATED_SETTINGS as readonly string[]).includes(key)) {
-      if (key === 'siteID') v = crypto.randomUUID();
-      else if (key === 'secret_key') v = randomString(256);
-      else if (key === 'hash_id_salt') v = randomString(64);
-    }
-    toInsert.push({ name: key, value: v });
+    toInsert.push({ name: key, value: generatedSettingValue(key) ?? value });
   }
 
-  if (toInsert.length === 0) {
+  // 已存在但被清空的生成型键：必须补回随机值。
+  //   - `secret_key` 为空 = JWT 用空密钥签名，**任何人都能伪造任意账号的
+  //     token**（包括管理员）；
+  //   - `hash_id_salt` 为空 = hashid 退化成无盐混淆，ID 可被离线枚举。
+  // 自举只在首次部署跑一次，之后这些值被手工清空/导入缺列就再没人管，
+  // 所以这里对「已存在的空值」也做一次修复。
+  const toFix: { name: string; value: string }[] = [];
+  for (const key of GENERATED_SETTINGS) {
+    if (!existing.has(key)) continue; // 缺失的已由 toInsert 处理
+    if (existing.get(key)!.trim().length > 0) continue;
+    const v = generatedSettingValue(key);
+    if (v) toFix.push({ name: key, value: v });
+  }
+
+  if (toInsert.length === 0 && toFix.length === 0) {
     // 即便没有新键要插，自举本身意味着「刚部署新版本」——迁移（如 0011
     // 回填 file_viewers）可能改过 settings 行，而 KV 里的 settings 快照
     // 还是旧的。这里无条件清一次缓存，让下个请求回源读到库里的新值。
@@ -437,17 +468,31 @@ export async function ensureSettings(env: Env, db: DbHandle = resolveDb(env)): P
     return;
   }
 
-  // 全部缺失键合并成一个事务提交（= 1 个 HTTP 请求）。逐条插在免费版
-  // Workers 里会撞 50-subrequest 上限，并发冷启动还会触发 Neon 429。
+  // 全部合并成一个事务提交（= 1 个 HTTP 请求）。逐条写会撞免费版 Workers
+  // 的 50-subrequest 上限，并发冷启动还会触发 Neon 429。
   await withRetry(() =>
-    sql.transaction(
-      toInsert.map((item) => sql`
+    sql.transaction([
+      ...toInsert.map(
+        (item) => sql`
         INSERT INTO settings (name, value)
         VALUES (${item.name}, ${item.value})
         ON CONFLICT (name) DO NOTHING
-      `),
-    ),
+      `,
+      ),
+      ...toFix.map(
+        (item) => sql`
+        UPDATE settings SET value = ${item.value}, updated_at = now()
+        WHERE name = ${item.name} AND (value IS NULL OR btrim(value) = '')
+      `,
+      ),
+    ]),
   );
+  if (toFix.length > 0) {
+    // 补了密钥类设置：记一条，方便事后排查「为什么某天开始旧链接/token 失效」
+    console.warn(
+      `ensureSettings: regenerated empty generated settings (${toFix.map((f) => f.name).join(', ')})`,
+    );
+  }
   await invalidateSettings(env);
 }
 
