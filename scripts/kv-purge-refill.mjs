@@ -199,7 +199,12 @@ function listKeys(nsId, prefix) {
     if (prefix) args.push(`--prefix=${prefix}`);
     if (cursor) args.push(`--cursor=${cursor}`);
     const r = wrangler(args);
-    if (r.code !== 0) return { keys, error: r.out.trim().split('\n').slice(-3).join(' ') };
+    if (r.code !== 0) {
+      // 失败输出尾部常是空行/日志路径提示，直接 slice(-3) 会取到空串，
+      // 真实错误（权限不足 / 限流）反而被吞。过滤空行后取最后两行。
+      const lines = r.out.trim().split('\n').filter((l) => l.trim());
+      return { keys, error: lines.slice(-2).join(' | ') || `wrangler 退出码 ${r.code}` };
+    }
     let parsed;
     try {
       parsed = JSON.parse(r.out.slice(r.out.indexOf('[')));
