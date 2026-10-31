@@ -7,6 +7,7 @@
  *   GET    /api/v4/user/capacity         容量
  *   GET    /api/v4/user/avatar/:id       头像
  *   GET    /api/v4/user/setting          用户设置
+ *   GET    /api/v4/user/setting/policies 当前用户组可挂载的存储策略（桌面端用）
  *   PATCH  /api/v4/user/setting          修改设置
  *   GET    /api/v4/user/setting/2fa      初始化两步验证
  *   PUT    /api/v4/user/setting/avatar   上传头像
@@ -164,6 +165,22 @@ userRoutes.get('/setting', async (c) => {
           : '',
       oauth_grants: await new OAuthService(ctx, c.env).listGrants(ctx.user.id),
     });
+});
+
+// 官方桌面端（cloudreve/desktop）调用 GET /user/setting/policies 拿「当前用户可挂载的
+// 存储策略」列表（用于挂载外部存储策略）。这是 Cloudreve Pro 的端点，开源 v4 没有；
+// 客户端对它 404 只是 warn 不致命，但补上能让「挂载存储策略」功能可用。
+// 返回当前用户组关联的全部策略，映射到客户端 StoragePolicy 结构。
+userRoutes.get('/setting/policies', async (c) => {
+  const ctx = ctxOf(c);
+  if (!ctx.user) return fail(c, Err.loginRequired());
+  try {
+    const rows = await ctx.groupPolicies(ctx.user);
+    const fs = new FileSystemService(ctx);
+    return ok(c, rows.map((p) => fs.buildPolicyInfo(p)));
+  } catch (e) {
+    return fail(c, e);
+  }
 });
 
 userRoutes.patch('/setting', async (c) => {
