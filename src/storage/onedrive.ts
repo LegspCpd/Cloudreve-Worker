@@ -19,6 +19,7 @@
 import type { Env } from '../env';
 import { kvFor } from '../lib/kvRouter';
 import { getSql } from '../db';
+import { safeDecodePath } from '../lib/paths';
 import type { StoragePolicyRow } from '../db/types';
 import { bytesToBase64, base64ToBytes } from '../lib/crypto';
 import {
@@ -623,20 +624,32 @@ export class OneDriveDriver implements StorageDriver {
     size: number;
     downloadUrl?: string;
   } | null> {
-    const res = await this.request(
-      'GET',
-      `${this.url(`root:/${graphPath(path)}`)}?expand=thumbnails`,
-    );
-    if (res.status === 404) return null;
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Failed to get OneDrive file info: ${res.status} ${text.slice(0, 300)}`);
-    }
-    const json = (await res.json()) as {
-      size: number;
-      '@microsoft.graph.downloadUrl'?: string;
+    const lookup = async (p: string) => {
+      const res = await this.request(
+        'GET',
+        `${this.url(`root:/${graphPath(p)}`)}?expand=thumbnails`,
+      );
+      if (res.status === 404) return null;
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`Failed to get OneDrive file info: ${res.status} ${text.slice(0, 300)}`);
+      }
+      const json = (await res.json()) as {
+        size: number;
+        '@microsoft.graph.downloadUrl'?: string;
+      };
+      return { size: json.size ?? 0, downloadUrl: json['@microsoft.graph.downloadUrl'] };
     };
-    return { size: json.size ?? 0, downloadUrl: json['@microsoft.graph.downloadUrl'] };
+
+    const hit = await lookup(path);
+    if (hit) return hit;
+
+    // 历史脏数据兜底：早期版本把 URI 的编码形式（%20）直接带进了 savePath，
+    // OneDrive 上实际落的是解码后的真名目录。path 与解码后不同时重试一次，
+    // 让旧文件也能打开。新上传（dirPathOf 已解码）不受影响。
+    const decoded = safeDecodePath(path);
+    if (decoded !== path) return lookup(decoded);
+    return null;
   }
 
   /**

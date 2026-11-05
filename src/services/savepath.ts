@@ -120,6 +120,10 @@ function normalizeSlashes(s: string): string {
   return s.replace(/\\/g, '/');
 }
 
+// safeDecodePath 的实现与说明在 lib/paths.ts；这里 re-export 供 savepath
+// 的既有调用方（上传链路）使用。
+export { safeDecodePath } from '../lib/paths';
+
 /** 等价于 Go 的 `path.Join(path.Clean(dir), name)`。 */
 function joinAndClean(dir: string, name: string): string {
   const joined = `${dir.replace(/\/+$/, '')}/${name}`;

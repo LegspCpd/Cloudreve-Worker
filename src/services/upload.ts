@@ -14,7 +14,7 @@
 import { AppContext } from './context';
 import { logAudit } from './audit';
 import { FileSystemService } from './fs';
-import { generateSavePath } from './savepath';
+import { generateSavePath, safeDecodePath } from './savepath';
 import { FileSystemType, URI, validateName } from './uri';
 import {
   EncryptionCipher,
@@ -300,7 +300,12 @@ export class UploadService {
   /** 对象键模板里的 `{path}`：文件所在的网盘目录，以 `/` 结尾。 */
   private dirPathOf(dirUri: URI): string {
     if (dirUri.isRoot) return '';
-    return `${dirUri.path.replace(/\/+$/, '')}/`;
+    // URI.path 是 URL 编码形式（URI.parse 用 new URL()，pathname 里空格等
+    // 已被编码）。物理路径必须用解码后的真名，否则编码形式一路带进
+    // generateSavePath，按名字寻址的驱动（OneDrive 等）读写两侧解码层数
+    // 对不上 → 上传成功、打开 404。生产实测过。
+    const p = safeDecodePath(dirUri.path.replace(/\/+$/, ''));
+    return `${p}/`;
   }
 
   /** 策略级限制：单文件大小上限、扩展名黑白名单、名称正则。 */

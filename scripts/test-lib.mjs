@@ -1,8 +1,8 @@
 /**
  * 纯函数 / 小工具的回归测试。
  *
- * 目前覆盖 `lib/disposition.ts`（Content-Disposition 生成）—— 文件名是用户
- * 可控字符串，它直接拼进 HTTP 头，写错就是头注入或下载文件名乱码。
+ * 覆盖 `lib/disposition.ts`（Content-Disposition 生成）与 `lib/paths.ts`
+ * （路径解码）等纯函数。
  *
  * 跑法：`npm run test:lib`
  */
@@ -75,6 +75,35 @@ try {
   check('反斜杠被打成下划线', !back.includes('\\'), back);
   const empty = attachmentDisposition('');
   check('空文件名不产生非法头', empty === 'attachment; filename=""', empty);
+
+  // ---------------------------------------------------------------------
+  // [6] safeDecodePath（lib/paths.ts）
+  // ---------------------------------------------------------------------
+  const pathsBundle = path.join(outDir, 'paths.mjs');
+  await build({
+    entryPoints: [path.join(ROOT, 'src/lib/paths.ts')],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node20',
+    outfile: pathsBundle,
+    logLevel: 'silent',
+  });
+  const { safeDecodePath } = await import(`file://${pathsBundle}`);
+
+  console.log('\n[6] safeDecodePath');
+  check(
+    '编码目录还原真名',
+    safeDecodePath('music/Windows%20XP%20OOBE%20Welcome%20Music') ===
+      'music/Windows XP OOBE Welcome Music',
+    safeDecodePath('music/Windows%20XP%20OOBE%20Welcome%20Music'),
+  );
+  check('中文段解码', safeDecodePath('%E9%9F%B3%E4%B9%90') === '音乐');
+  check('真名含 % 的正确编码形式', safeDecodePath('50%25off/keep') === '50%off/keep');
+  check('裸百分号保留原样', safeDecodePath('50%off/keep') === '50%off/keep');
+  check('无 % 的路径原样返回', safeDecodePath('plain/path/file.mp3') === 'plain/path/file.mp3');
+  check('空串安全', safeDecodePath('') === '');
+  check('不全解码（只解 % 段）', safeDecodePath('a%20b/plain') === 'a b/plain');
 } catch (e) {
   failed += 1;
   console.error('\n  ERROR', e instanceof Error ? e.message : e);
