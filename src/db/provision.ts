@@ -32,12 +32,15 @@ import m0014 from '../../migrations/0014_rate_limits.sql';
 import m0015 from '../../migrations/0015_share_report.sql';
 import m0016 from '../../migrations/0016_social_bindings.sql';
 import m0017 from '../../migrations/0017_entity_encryption.sql';
+import m0018 from '../../migrations/0018_key_values.sql';
 import { withRetry } from './index';
 import { randomString } from '../lib/crypto';
 import { splitStatements } from '../lib/sql-split.mjs';
 import type { Env } from '../env';
 import { kvFor } from '../lib/kvRouter';
 import { resolveDb, type DbHandle } from './shard';
+
+export const BOOTSTRAP_FLAG = 'bootstrap:done:v19';
 
 const MIGRATIONS: ReadonlyArray<readonly [name: string, sqlText: string]> = [
   ['0001_init.sql', m0001],

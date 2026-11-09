@@ -23,6 +23,7 @@ import { BACKEND_VERSION } from '../lib/version';
 import { backupDatabaseUrls, databaseUrls, failoverEnabled } from '../db';
 import { archiveCount, archiveEnabled } from '../services/archive';
 import { walUnfinished } from '../services/wal';
+import { runCronTasks, CRON_TICK_THROTTLE_MS } from '../services/cron';
 import { purgeAllCaches, warmAllCaches } from '../services/cacheWarmer';
 import { CACHE_ENTRIES, purgeableEntries } from '../lib/cacheRegistry';
 import { DEFAULT_FILE_VIEWERS, parseFileViewers } from '../settings/fileViewers';
@@ -670,3 +671,24 @@ async function verifyCaptchaInner(
   await kvFor(ctx.env, 'session').delete(`${CAPTCHA_PREFIX}${ticket}`); // 一次性
   return expected.toUpperCase() === value.toUpperCase();
 }
+
+/**
+ * 定时任务 HTTP 触发端点（EdgeOne Pages 的 schedules 用）。
+ *
+ * EdgeOne 没有 Worker 内部事件，schedules 只能打一个 HTTP 路径 —— 而
+ * schedules 的配置里带不了鉴权头，这个端点必须是公开的。风险面控制：
+ * 任务本身全部幂等（缓存刷新 / 回收站清理），再加 10 分钟节流
+ * （flag KV 记上次执行时间；EdgeOne 上 flag 是 DB 兜底，全局一致），
+ * 被高频打时只会返回 skipped。
+ */
+siteRoutes.post('/cron/tick', async (c) => {
+  const kv = kvFor(c.env, 'flag');
+  const now = Date.now();
+  const last = Number((await kv.get('cron:last-run')) ?? 0);
+  if (now - last < CRON_TICK_THROTTLE_MS) {
+    return ok(c, { skipped: true, lastRun: last, nextEligibleAt: last + CRON_TICK_THROTTLE_MS });
+  }
+  await kv.put('cron:last-run', String(now), { expirationTtl: 86400 });
+  await runCronTasks(c.env);
+  return ok(c, { ok: true, ranAt: now });
+});

@@ -1,0 +1,35 @@
+{
+  "name": "cloudreve-edge",
+  "installCommand": "npm install",
+  "buildCommand": "node scripts/build-edgeone.mjs",
+  "outputDirectory": "dist",
+  "nodeVersion": "22.11.0",
+  "headers": [
+    {
+      "source": "/assets/*",
+      "headers": [
+        { "key": "Cache-Control", "value": "public,max-age=31536000,immutable" }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/*",
+      "destination": "/index.html"
+    }
+  ],
+  "cloudFunctions": {
+    "nodejs": {
+      "maxDuration": 120
+    }
+  },
+  "schedules": [
+    {
+      "name": "hourly-cron",
+      "cron": "0 * * * *",
+      "path": "/api/v4/site/cron/tick",
+      "method": "POST",
+      "timezone": "UTC"
+    }
+  ]
+}

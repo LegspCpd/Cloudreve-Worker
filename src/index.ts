@@ -30,7 +30,7 @@ import { resolveDb } from './db/shard';
 import { closePgScope, createPgScope, enterPgScope, getSql } from './db';
 import { kvFor } from './lib/kvRouter';
 import { warmAllCaches } from './services/cacheWarmer';
-import { ensureDomainShards, } from './db/domainBootstrap';
+import { ensureDomainShards } from './db/domainBootstrap';
 import { applyDomainDownFromKv } from './db/shard';
 import { warmPolicyCache } from './services/policyCache';
 import { ensureEnvAdmin } from './services/envAdmin';
@@ -53,6 +53,8 @@ import { DownloadService } from './services/download';
 import { FileSystemService } from './services/fs';
 import { syncNodeTasks } from './services/nodeTasks';
 import { sharePreview } from './middleware/sharePreview';
+import { runCronTasks } from './services/cron';
+import { BOOTSTRAP_FLAG } from './db/provision';
 import { ShareService } from './services/share';
 import { isSocialMediaBot, renderSharePreview } from './services/share-preview';
 
@@ -87,7 +89,6 @@ import { isSocialMediaBot, renderSharePreview } from './services/share-preview';
  * （踩过：加了 site_state / rate_limits 两张表没 bump，线上一直「表不存在」，
  * 限速静默失效、注册也会挂在 claimFirstAdmin 上）。
  */
-const BOOTSTRAP_FLAG = 'bootstrap:done:v18';
 /** 自举失败后的冷却键（20 秒 TTL）：期间请求直接快速失败，不再重放自举。 */
 const BOOTSTRAP_COOLDOWN = 'bootstrap:cooldown:v1';
 /** 同一 isolate 内的并发请求共享一次自举。 */
@@ -483,105 +484,24 @@ async function fetchWithFallback(
 }
 
 // ---------------------------------------------------------------------------
-// 导出
+// 定时任务
 // ---------------------------------------------------------------------------
 
+/**
+ * 定时任务主体。CF 的 `scheduled` 与 EdgeOne 的 HTTP cron 端点
+ * （`POST /api/v4/site/cron/tick`，见 routes/site.ts）共用这一份。
+ *
+ * 做三件事，任何一件失败都不影响后面的：
+ *   1. 缓存刷新：站点设置等缓存回源重写，防止「某条写路径漏了失效」长期陈旧。
+ *   2. 回收站到期清理（原版队列任务 trash_collector）。
+ *   3. 过期限速计数清理 + 从节点任务状态同步。
+ *
+ * ⚠️ 刻意不做「清空 KV」：逐键删会烧光免费档 50 subrequests 预算；
+ * 「清空再重填」在构建期由 scripts/kv-purge-refill.mjs 完成。这里只负责刷新。
+ */
 export default {
   fetch: fetchWithFallback,
-  /**
-   * 定时任务（在 wrangler.toml 的 `[triggers] crons` 里配置，当前是每小时整点）。
-   *
-   * 做三件事，按「重要性从高到低」排列，任何一件失败都不影响后面的：
-   *   1. **缓存刷新**：把站点设置这类缓存回源重写一遍，保证内容不会因为
-   *      「某条写路径漏了失效」而长期陈旧（需求：每小时自动拉取一次）。
-   *      只做覆盖写，不 list/delete —— 开销恒定，不受缓存键数影响。
-   *   2. 清掉回收站里已到期的项 —— 对应原版的队列任务 `trash_collector`，
-   *      判定依据是软删除时写入的 `sys:expected_collect_time`。
-   *   3. （隐含）KV 里的上传会话 / 验证码靠 TTL 自动过期，不需要在这里处理。
-   *
-   * ⚠️ **这里刻意不做「清空 KV」**：KV 绑定没有批量删，逐键删会把
-   * 免费档 50 subrequests 的预算烧光（见 `services/cacheWarmer.ts` 的说明）。
-   * 「清空再重填」在**构建期**由 `scripts/kv-purge-refill.mjs` 完成 ——
-   * 走 CLI 的批量接口，没有预算限制。这里只负责「刷新」。
-   */
   async scheduled(_event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
-    // 自举没完成（刚部署、还没人访问过）时 settings 表可能还不存在，
-    // 定时任务直接跳过 —— 第一次网页请求会完成自举。
-    try {
-      if (!(await kvFor(env, 'flag').get(BOOTSTRAP_FLAG))) {
-        console.log('cron: skipped (bootstrap not finished yet)');
-        return;
-      }
-    } catch {
-      // KV 都不可用就没什么可刷新的，等下一轮
-      return;
-    }
-
-    // 1. 缓存刷新。独立 try —— 刷新失败不能影响下面的回收站清理。
-    try {
-      const warmed = await warmAllCaches(env);
-      const failed = warmed.filter((w) => !w.ok).map((w) => w.id);
-      console.log(
-        failed.length === 0
-          ? `cron: cache refreshed (${warmed.length} entries)`
-          : `cron: cache refresh partial, failed=[${failed.join(',')}]`,
-      );
-    } catch (e) {
-      console.error('cron: cache refresh failed', describeError(e));
-    }
-
-    // 1.5 分域自举兜底（幂等，自举时域库恰好不可用的话这里补上）
-    //     + 策略行预热进 L1/KV（读极多的热数据，空闲后首个请求直接命中缓存）。
-    try {
-      await applyDomainDownFromKv(env);
-      await ensureDomainShards(env);
-    } catch (e) {
-      console.error('cron: domain shard bootstrap failed', describeError(e));
-    }
-    try {
-      const n = await warmPolicyCache(env);
-      console.log(`cron: policy cache warmed (${n} rows)`);
-    } catch (e) {
-      console.error('cron: policy cache warm failed', describeError(e));
-    }
-
-    // 2. 回收站到期清理。
-    try {
-      const settings = await loadSettings(env);
-      const appCtx = new AppContext(
-        env,
-        settings,
-        new HashIDCodec(settings.hashIdSalt),
-        new JWTService(settings.secretKey),
-      );
-      const removed = await new FileSystemService(appCtx).purgeExpiredTrash();
-      if (removed > 0) {
-        console.log(`trash collector: purged ${removed} expired item(s)`);
-      }
-    } catch (e) {
-      // 定时任务不该因为一次失败就中断后续调度；这里只记日志，不向上抛。
-      // 部分错误对象（跨序列化边界）会丢 message，把全部字段 dump 出来
-      // 才能在日志里看到真实原因，而不是只剩一行堆栈帧。
-      console.error('trash collector failed', describeError(e));
-    }
-
-    // 3. 清掉过期的限速计数（窗口外的行已经没用，留着只会越长越大）。
-    try {
-      const sql = getSql(env);
-      await sql("DELETE FROM rate_limits WHERE window_start < EXTRACT(EPOCH FROM now())::bigint - 3600");
-    } catch (e) {
-      console.error('rate limit cleanup failed', describeError(e));
-    }
-
-    // 4. 从节点任务状态同步。没有从节点的部署这一步是零查询（LIKE 匹配为空）。
-    try {
-      const synced = await syncNodeTasks(env);
-      if (synced.checked > 0) {
-        console.log(`node task sync: checked=${synced.checked} updated=${synced.updated}`);
-      }
-    } catch (e) {
-      console.error('node task sync failed', describeError(e));
-    }
+    await runCronTasks(env);
   },
 };
-

@@ -22,6 +22,8 @@
  * `.get()` 上崩；回退后老部署行为与改动前完全一致，不需要重新部署配置。
  */
 import type { Env } from '../env';
+import { getSql } from '../db';
+import { createDbKv } from '../db/kvStore';
 
 /** KV 的语义角色。见文件头注释的分工表。 */
 export type KvRole = 'site' | 'session' | 'upload' | 'cred' | 'flag';
@@ -55,9 +57,12 @@ export function kvFor(env: Env, role: KvRole): KVNamespace {
     const ns = bindings[name];
     if (ns) return withPrefixGuard(ns, role, name);
   }
-  throw new Error(
-    `KV namespace 未绑定：角色 "${role}" 找不到 ${ROLE_BINDINGS[role].join(' / ')} 中任何一个`,
-  );
+
+  // 全部绑定缺失（EdgeOne Node 云函数等无 KV 环境）→ 落 DB 表兜底。
+  // key_values 表（迁移 0018）由 kvStore 首次使用时自动建，迁移标记本身
+  // 也走这条兜底，鸡生蛋问题就此解决。CF 部署有绑定，永远走不到这里。
+  const sql = getSql(env);
+  return withPrefixGuard(createDbKv(sql) as unknown as KVNamespace, role, 'db-key-values');
 }
 
 /** 默认角色：站点设置这类「读多写少、与请求语义无关」的缓存。 */
