@@ -59,25 +59,58 @@ console.log('▶ [2/3] 组装 dist/（outputDirectory）…');
 }
 
 // ---- 3. Node 云函数（catch-all bundle）--------------------------------------
-console.log('▶ [3/3] 打包 Node 云函数…');
+// ⚠️ 产物必须提交进仓库：EdgeOne 的函数路由在构建前从仓库读取，构建期
+// 新建的 cloud-functions/ 不一定被注册（本项目实测：函数没入库时 /api/*
+// 全被 SPA fallback 回成 index.html，前端报 themes undefined）。
+// `--check` 模式供 CI 用：重新打包后与已提交产物逐字节比对，防止改了
+// src/ 忘了重新生成产物。
+const CHECK = process.argv.includes('--check');
+const ARTIFACT = path.join(ROOT, 'cloud-functions', '[[default]].js');
+const OUTFILE = CHECK
+  ? path.join(ROOT, 'node_modules', '.cache', 'edgeone-artifact-check.mjs')
+  : ARTIFACT;
+
+console.log(CHECK ? '▶ [3/3] 校验云函数产物是否最新…' : '▶ [3/3] 打包 Node 云函数…');
+if (CHECK) mkdirSync(path.dirname(OUTFILE), { recursive: true });
 await esbuild.build({
   entryPoints: [path.join(ROOT, 'api', 'makers.ts')],
   bundle: true,
   platform: 'node',
   target: 'node22',
   format: 'esm',
-      minify: true,
-      outfile: path.join(ROOT, 'cloud-functions', '[[default]].js'),
-      // SPA 壳内联：dist/index.html 以文本形式打进 bundle（构建顺序保证
-      // 这一步跑在「组装 dist/」之后）。
-      loader: { '.html': 'text', '.sql': 'text' },
-      // cloudflare:sockets 换成 node:net shim（src/edgeone/socket-shim.ts）；
-      // CF 的 wrangler 构建走平台原生实现，不受本 alias 影响。
-      alias: {
+  minify: true,
+  outfile: OUTFILE,
+  // SPA 壳内联：dist/index.html 以文本形式打进 bundle（构建顺序保证
+  // 这一步跑在「组装 dist/」之后）。
+  loader: { '.html': 'text', '.sql': 'text' },
+  // cloudflare:sockets 换成 node:net shim（src/edgeone/socket-shim.ts）；
+  // CF 的 wrangler 构建走平台原生实现，不受本 alias 影响。
+  alias: {
     'cloudflare:sockets': path.join(ROOT, 'src', 'edgeone', 'socket-shim.ts'),
   },
   logLevel: 'silent',
 });
-console.log('  ✓ cloud-functions/[[default]].js');
+
+if (CHECK) {
+  const { readFileSync, rmSync } = await import('node:fs');
+  const expected = readFileSync(OUTFILE);
+  rmSync(OUTFILE, { force: true });
+  if (!existsSync(ARTIFACT)) {
+    console.error('✘ cloud-functions/[[default]].js 未提交');
+    process.exit(1);
+  }
+  const actual = readFileSync(ARTIFACT);
+  if (!expected.equals(actual)) {
+    console.error(
+      '✘ 云函数产物已过期：改了 api/ 或 src/ 之后要跑\n' +
+        '    node scripts/build-edgeone.mjs\n' +
+        '  并把 cloud-functions/[[default]].js 一起提交。',
+    );
+    process.exit(1);
+  }
+  console.log('  ✓ 云函数产物与源码一致');
+} else {
+  console.log('  ✓ cloud-functions/[[default]].js');
+}
 
 console.log('✔ EdgeOne 构建完成');

@@ -126,6 +126,12 @@ jobs:
       - name: 构建 + dry-run 检查（含拉取官方前端）
         run: npm run build
 
+      # EdgeOne 云函数产物必须与 api/ + src/ 同步：函数路由在构建前从仓库
+      # 读取，产物没入库时 /api/* 会被 SPA fallback 回成 index.html，
+      # 前端拿 HTML 当 JSON 解析 → themes undefined 白屏（生产踩过）。
+      - name: EdgeOne 云函数产物一致性
+        run: node scripts/build-edgeone.mjs --check
+
       # 前端 COMMIT 变了但还没有对应预构建包时，这一次是源码现构建。
       # 顺手把产物发到 Release（tag frontend-assets），下次 CI 与 Cloudflare
       # 的构建都能秒级命中；否则每 bump 一次前端都要再等一遍 yarn + vite。
