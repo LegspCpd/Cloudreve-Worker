@@ -7,7 +7,7 @@
  *   2. `cloud-functions/[[default]].js` —— catch-all Node 云函数，处理
  *      全部后端路径（/api/*、/dav、/s/:id 分享页、/f/:id 直链、manifest）。
  *
- * ⚠️ 函数内要做 SPA 壳兜底（api/_makers.ts 的 isHtmlNav 分支）：前端路由
+ * ⚠️ 函数内要做 SPA 壳兜底（api/makers.ts 的 isHtmlNav 分支）：前端路由
  *   （/home 等）在静态层不存在，会落到 catch-all 函数，没有壳兜底就是
  *   404 JSON，前端路由全打不开。缺失的 /assets/*.js 则必须 404 —— 回壳
  *   会造成「HTML 当 JS」的白屏（CF 的 not_found_handling 踩过同样的坑）。
@@ -61,7 +61,7 @@ console.log('▶ [2/3] 组装 dist/（outputDirectory）…');
 // ---- 3. Node 云函数（catch-all bundle）--------------------------------------
 console.log('▶ [3/3] 打包 Node 云函数…');
 await esbuild.build({
-  entryPoints: [path.join(ROOT, 'api', '_makers.ts')],
+  entryPoints: [path.join(ROOT, 'api', 'makers.ts')],
   bundle: true,
   platform: 'node',
   target: 'node22',

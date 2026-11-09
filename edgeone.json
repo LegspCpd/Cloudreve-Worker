@@ -19,14 +19,12 @@
     }
   ],
   "cloudFunctions": {
-    "nodejs": {
-      "maxDuration": 120
-    }
+    "maxDuration": 120
   },
   "schedules": [
     {
-      "name": "hourly-cron",
-      "cron": "0 * * * *",
+      "name": "daily-cron",
+      "cron": "0 3 * * *",
       "path": "/api/v4/site/cron/tick",
       "method": "POST",
       "timezone": "UTC"
