@@ -17,6 +17,7 @@ import {
   AppError,
   Code2FACodeErr,
   CodeEmailExisted,
+  CodeFeatureNotEnabled,
   CodeIncorrectPassword,
   CodeInternalSetting,
   CodeInvalidPassword,
@@ -864,6 +865,14 @@ export class UserService {
   /** 上传头像到 R2。 */
   async uploadAvatar(body: ArrayBuffer, contentType: string): Promise<void> {
     const user = this.ctx.requireUser();
+    // R2 是可选绑定（R2 去强制化）：没绑时明确报错而不是 undefined 引用炸 500。
+    if (!this.ctx.env.R2) {
+      throw new AppError(
+        CodeFeatureNotEnabled,
+        'Avatar storage requires an R2 binding (wrangler.toml [[r2_buckets]]); ' +
+          'deploy without one and avatar upload stays disabled',
+      );
+    }
     const maxSize = this.ctx.settings.getInt('avatar_size', 4194304);
     if (body.byteLength > maxSize) {
       throw new AppError(40049, `Avatar size exceeds ${maxSize} bytes`);
@@ -877,6 +886,7 @@ export class UserService {
   async getAvatar(userHashId: string): Promise<{ body: ReadableStream; contentType: string } | null> {
     const uid = this.ctx.codec.decodeUserID(userHashId);
     if (uid === null) return null;
+    if (!this.ctx.env.R2) return null; // 未绑 R2 的部署没有头像
     const user = await this.ctx.users.byId(uid);
     if (!user?.avatar?.startsWith('r2://')) return null;
     const key = user.avatar.slice('r2://'.length);

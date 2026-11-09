@@ -82,7 +82,17 @@ function createNodeRelayDriver(env: Env, policy: StoragePolicyRow): NodeRelayDri
 export function getStorageDriver(env: Env, policy: StoragePolicyRow): StorageDriver {
   switch (policy.type) {
     case PolicyType.S3:
-      // 兼容内置 R2 策略：没填 AK/SK 就用 Worker 的 R2 绑定
+      // 兼容内置 R2 策略：没填 AK/SK 就用 Worker 的 R2 绑定。
+      // R2 绑定是可选的（不绑也能跑）：两边都没有时给明确错误，
+      // 而不是让 S3CompatibleDriver 拿空凭证在请求时才爆。
+      if (!policy.access_key && !env.R2) {
+        throw new AppError(
+          CodePolicyNotAllowed,
+          `Storage policy "${policy.name}" has no access_key and no R2 binding: ` +
+            'bind an R2 bucket in wrangler.toml, or fill access_key/secret_key ' +
+            'with any S3-compatible endpoint (COS / OBS / MinIO / R2 S3 API)',
+        );
+      }
       if (!policy.access_key && env.R2) return new R2Driver(env, policy);
       return new S3CompatibleDriver(policy);
     case PolicyType.Oss:

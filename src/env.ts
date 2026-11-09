@@ -121,8 +121,12 @@ export interface Env {
    * 未绑定时归档功能整体降级为 no-op（见 `services/archive.ts`）。
    */
   ARCHIVE_KV?: KVNamespace;
-  /** R2：内置对象存储后端 */
-  R2: R2Bucket;
+  /**
+   * R2：内置对象存储后端。**可选绑定**——不绑也能跑，前提是所有存储策略
+   * 都配了 access_key（任意 S3 兼容端点，含 COS/OBS/MinIO），头像功能不可用。
+   * deploy.mjs 在 bucket 创建失败时会自动把这段绑定从 wrangler.toml 摘除。
+   */
+  R2?: R2Bucket;
   /**
    * 官方前端的静态资源绑定。仅当 wrangler.toml 里配置了 `[assets]` 时存在，
    * 此时静态文件与 SPA 回落由平台的资源层直接处理，Worker 只在兜底路径上用它。

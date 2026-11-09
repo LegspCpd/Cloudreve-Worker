@@ -5,7 +5,7 @@
  *
  *   1. 按 `KV_COUNT` 装配 KV 绑定（scripts/setup-kv.mjs）。>5 直接拒绝构建。
  *      然后逐个 namespace「不存在就创建」，把真实 ID 回填进 wrangler.toml。
- *   2. R2 bucket 不存在就自动创建。
+ *   2. R2 bucket 不存在就自动创建；创建失败改用无 R2 绑定部署（R2 可选）。
  *   3. 准备官方前端（缺了自动拉源码构建）。
  *   4. `wrangler deploy` 发布；若 CI 环境变量里给了 SITE_URL / FRONTEND_URL，
  *      用 --var 覆盖 wrangler.toml 里的空值，无需改文件。
@@ -198,10 +198,23 @@ console.log('▶ 2/6 检查 R2 bucket…');
   } else {
     const created = run(NPX, npxArgs(['r2', 'bucket', 'create', R2_BUCKET]));
     if (created.code !== 0 && !/already exists|10041/i.test(created.all)) {
-      console.error(`\n✘ 创建 R2 bucket 失败（exit ${created.code}）：\n${created.all}`);
-      process.exit(created.code);
+      // R2 是可选绑定（2026-11 需求：不强制 R2，用户可绑任意 S3 兼容存储）。
+      // 创建失败（套餐/权限/区域不支持）不该挡部署：把绑定从 wrangler.toml
+      // 摘掉继续发布，代价只是头像功能不可用 + 预置策略需要手填 AK/SK。
+      console.error(`  ⚠ 创建 R2 bucket 失败（exit ${created.code}），改用无 R2 绑定部署。`);
+      console.error(`    详情：${created.all.trim().split('\n').filter((l) => l.trim()).slice(-2).join(' | ')}`);
+      const toml = readFileSync(TOML_PATH, 'utf8');
+      const stripped = toml.replace(/\n\[\[r2_buckets\]\][^\[]*(?=\n\[|$)/g, '\n');
+      if (stripped === toml) {
+        console.error('  ✘ 未能从 wrangler.toml 移除 [[r2_buckets]]，终止部署。');
+        process.exit(created.code);
+      }
+      writeFileSync(TOML_PATH, stripped);
+      console.log('  已从 wrangler.toml 移除 [[r2_buckets]]，本次部署不含 R2。');
+      console.log('  存储请在管理后台配 S3 兼容策略（COS/OBS/MinIO 均可）；头像功能不可用。');
+    } else {
+      console.log(`  ${R2_BUCKET} 就绪。`);
     }
-    console.log(`  ${R2_BUCKET} 就绪。`);
   }
 }
 
