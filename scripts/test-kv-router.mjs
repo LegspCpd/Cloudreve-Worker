@@ -229,17 +229,25 @@ function fakeKv(tag) {
   console.log('  ✓ list 前缀正确叠加（角色前缀在前，调用方前缀在后）');
 }
 
-// 场景 E：完全没有可用绑定时抛出明确错误
+// 场景 E：完全没有 KV 绑定 → 落 DB 兜底（EdgeOne Node 云函数等无 KV 环境）
 {
+  // ① 连 DATABASE_URL 都没有：兜底路径拿不到库，抛明确错误（不是静默 undefined）
   let threw = false;
   try {
     kvRouter.kvFor({}, 'site');
   } catch (e) {
     threw = true;
-    assert.match(String(e.message), /KV namespace 未绑定/);
+    assert.match(String(e.message), /DATABASE_URL/);
   }
-  assert.ok(threw, '无绑定时应抛错而不是静默返回 undefined');
-  console.log('  ✓ 无绑定：抛明确错误，不静默返回 undefined');
+  assert.ok(threw, '无绑定且无数据库连接串时应抛错而不是静默返回 undefined');
+  console.log('  ✓ 无绑定 + 无 DATABASE_URL：抛明确错误');
+
+  // ② 有连接串：返回 DB 兜底 KV（key_values 表，迁移 0018）
+  const kv = kvRouter.kvFor({ DATABASE_URL: 'postgresql://u:p@ep-one.aws.neon.tech/db?sslmode=require' }, 'site');
+  assert.ok(kv, '有连接串时应返回 DB 兜底 KV 而不是抛错');
+  assert.equal(typeof kv.get, 'function', '兜底 KV 应实现 get');
+  assert.equal(typeof kv.put, 'function', '兜底 KV 应实现 put');
+  console.log('  ✓ 无 KV 绑定 + 有连接串：落到 DB 兜底 KV（EdgeOne 场景）');
 }
 
 console.log('\n✅ 全部自检通过');
