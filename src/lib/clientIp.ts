@@ -25,3 +25,27 @@ export function clientIpFromHeaders(
   }
   return 'unknown';
 }
+
+/**
+ * 限速桶 id 的 IP 归一化。
+ *
+ * 非 CF 平台（线上实测 ESA）每次请求的出口 IP 会在同一运营商网段内轮换
+ * （IPv6 形如 2404:2280:208:0:3::b / 2404:2280:2fb:0:3::9），用完整 IP
+ * 当 key 会让计数永远分散成 hits=1 的新桶，限速形同虚设。
+ * IPv4 归到 /24、IPv6 归到 /32；邮箱、分享 id、会话 id 等非 IP 原样返回。
+ *
+ * 归一后桶更粗，所以 RATE_LIMITS 里按 IP 的阈值同步放大，避免同一出口
+ * 下的正常用户互相误伤；目标维度的桶（如 loginByEmail）保持不变。
+ */
+export function normalizeRateLimitId(id: string): string {
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(id)) {
+    return `${id.split('.').slice(0, 3).join('.')}.0/24`;
+  }
+  // 只认纯 hex + 冒号的 IPv6 字面量。分享密码的 id 是 `${shareId}:${ip}`
+  // （含点和十进制），不能被误判成 IPv6 而把不同分享混进同一个桶。
+  if (/^[0-9a-fA-F:]+$/.test(id) && (id.match(/:/g) ?? []).length >= 2) {
+    const parts = id.split(':');
+    return `${parts.slice(0, 2).join(':')}::/32`;
+  }
+  return id;
+}

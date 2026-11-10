@@ -116,7 +116,7 @@ try {
     outfile: ipBundle,
     logLevel: 'silent',
   });
-  const { clientIpFromHeaders } = await import(`file://${ipBundle}`);
+  const { clientIpFromHeaders, normalizeRateLimitId } = await import(`file://${ipBundle}`);
   const headers = (o) => (name) => o[name];
   check(
     'CF 平台注入的头优先（平台会覆盖客户端伪造值）',
@@ -133,6 +133,14 @@ try {
   check('XFF 单段', clientIpFromHeaders(headers({ 'X-Forwarded-For': ' 5.6.7.8 ' })) === '5.6.7.8');
   check('全空回落 unknown', clientIpFromHeaders(headers({})) === 'unknown');
   check('空段不干扰', clientIpFromHeaders(headers({ 'X-Forwarded-For': ' , , 7.7.7.7 , ' })) === '7.7.7.7');
+
+  console.log('\n[8] normalizeRateLimitId（边缘出口 IP 轮换时计数不能散）');
+  check('IPv4 归 /24', normalizeRateLimitId('43.109.171.7') === '43.109.171.0/24');
+  check('同 /24 两 IP 同桶', normalizeRateLimitId('43.109.171.7') === normalizeRateLimitId('43.109.171.9'));
+  check('IPv6 归 /32', normalizeRateLimitId('2404:2280:208:0:3::b') === '2404:2280::/32');
+  check('同运营商不同 /48 同桶', normalizeRateLimitId('2404:2280:208:0:3::b') === normalizeRateLimitId('2404:2280:2fb:0:3::9'));
+  check('邮箱不受影响', normalizeRateLimitId('user@example.com') === 'user@example.com');
+  check('分享复合 id 不受影响', normalizeRateLimitId('12:1.2.3.4') === '12:1.2.3.4');
 } catch (e) {
   failed += 1;
   console.error('\n  ERROR', e instanceof Error ? e.message : e);
