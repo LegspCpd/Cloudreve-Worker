@@ -16,6 +16,7 @@
  */
 import type { Env } from '../env';
 import { getSql } from '../db';
+import { describeError } from './errors';
 
 export interface RateLimitOptions {
   /** 限速维度名，例如 `login:email`、`share:pwd` */
@@ -97,9 +98,11 @@ export async function hitRateLimit(
       return { ok: false, retryAfter: Math.max(1, opts.windowSec - (now - windowStart)), count };
     }
     return { ok: true, retryAfter: 0, count };
-  } catch {
+  } catch (e) {
     // 计数失败**放行**：宁可在数据库出问题时让人登录，也不要因为计数表挂了
-    // 把所有人锁在门外。
+    // 把所有人锁在门外。但必须留日志 —— ESA 上曾出现「hits 永远是 1」
+    // 而这里一声不吭，排查只能靠猜（平台子请求限额 / 驱动差异都有可能）。
+    console.warn('[rate-limit] bump failed, allowing request', describeError(e));
     return { ok: true, retryAfter: 0, count: 0 };
   }
 }
@@ -112,8 +115,9 @@ export async function clearRateLimit(
 ): Promise<void> {
   try {
     await store.reset(rateKeyOf(opts));
-  } catch {
+  } catch (e) {
     /* 尽力而为 */
+    console.warn('[rate-limit] reset failed', describeError(e));
   }
 }
 
