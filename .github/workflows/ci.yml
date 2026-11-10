@@ -1,15 +1,16 @@
 # ---------------------------------------------------------------------------
-# 前端产物 + 构建检查（**注意：这个 workflow 目前不负责部署**）
+# 前端产物 + 构建检查 + 双平台部署
 #
 #   1. build-check：每次 push / PR 都跑 —— 类型检查 + 全部离线测试 + wrangler
-#      dry-run 构建，另加一步「本仓库还没有对应预构建包就发一个」（见下）。
+#      dry-run 构建 + EdgeOne 云函数产物一致性门禁，另加一步「本仓库还没有
+#      对应预构建包就发一个」（见下）。
 #   2. deploy-check：只有配了 CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
-#      两个 secrets 才真的部署；**当前仓库这两个 secret 都没配**，所以这一步
-#      每次都只有「检查凭据 → skipped」，线上部署实际走的是
-#      Cloudflare 面板的 Workers Builds（Git 集成）。
-#      ⚠️ 想改成这里部署，必须**先关掉** CF 面板的 Git 集成，否则每次 push
-#      会部署两遍（同一份代码，后跑的覆盖先跑的，日志会很乱）。
-#   3. db-sync：配了 DATABASE_URL_2 才跑，主库 → 备库全量同步。
+#      两个 secrets 才真的部署 CF Worker（现在已配，每次 push 自动部署）。
+#   3. edgeone-build：EdgeOne 完整构建 + 产物校验 + 上传 artifact，不要凭据。
+#   4. edgeone-deploy：配了 EDGEONE_API_TOKEN / EDGEONE_CN_API_TOKEN 才部署
+#      EdgeOne Makers（国际站 / 中国站），否则只打 notice 跳过。
+#      ⚠️ 若 EdgeOne 项目仍绑着 Git 集成，push 会两套流程各部署一遍 ——
+#      想以 Actions 为准就先关掉控制台的 Git 集成。
 #
 # 为什么要在 CI 里发前端包：CF 的构建机拿不到「另一条流水线的缓存」，
 # 它只能按包名去 Release 下 —— 包名 = commit + 补丁内容哈希，而改过
@@ -230,3 +231,108 @@ jobs:
       - name: 真实部署（自动复用/创建 KV、R2）
         if: steps.creds.outputs.ok == 'true'
         run: node scripts/deploy.mjs
+
+  # -------------------------------------------------------------------------
+  # EdgeOne Makers（Pages）：构建校验 + 实际部署
+  #
+  #   edgeone-build  不依赖任何凭据，push / PR 都跑：完整构建（前端 + Node
+  #                  云函数）、组装自包含目录、校验平台配置、上传 artifact。
+  #   edgeone-deploy 配了 EDGEONE_API_TOKEN（国际站）或 EDGEONE_CN_API_TOKEN
+  #                  （中国站）才跑，用官方 CLI 部署上一步的产物。
+  #                  两个 token 都配就依次部署两个站（--site global / china）。
+  #
+  # 可选 Secrets / Variables：
+  #   EDGEONE_API_TOKEN       国际站 API Token
+  #   EDGEONE_CN_API_TOKEN    中国站 API Token（可选）
+  #   EDGEONE_PROJECT         国际站项目名，默认 cloudreve-worker-edgeone
+  #   EDGEONE_CN_PROJECT      中国站项目名，默认 cloudreve-worker-edgeone-cn
+  #   EDGEONE_ENV             部署环境 production / preview，默认 production
+  #
+  # ⚠️ 项目名必须填已存在的 Makers 项目；CLI 找不到同名项目会自动新建，
+  #    那不会带自定义域名和环境变量。若现有项目是「Git 集成」类型，
+  #    用 CLI 部署前需在控制台改成「直接上传」类型，或关掉 Git 集成，
+  #    否则每次 push 会两套流程各部署一遍。
+  # -------------------------------------------------------------------------
+  edgeone-build:
+    name: EdgeOne 构建 + 产物校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 缓存前端产物
+        uses: actions/cache@v4
+        with:
+          path: frontend
+          key: frontend-${{ hashFiles('scripts/fetch-frontend.mjs', 'frontend-patches/**') }}
+
+      - name: 安装依赖
+        run: npm install
+
+      - name: 完整构建（前端 + Node 云函数）
+        run: node scripts/build-edgeone.mjs
+
+      - name: 组装自包含部署目录
+        run: node scripts/assemble-edgeone.mjs
+
+      - name: 校验产物与平台配置
+        run: |
+          test -s edgeone-publish/index.html
+          test -s 'edgeone-publish/cloud-functions/[[default]].js'
+          test -s edgeone-publish/edgeone.json
+          node -e "const c=require('./edgeone-publish/edgeone.json'); if(!c.rewrites||!c.schedules||!c.cloudFunctions) throw new Error('edgeone.json 缺平台配置'); console.log('平台配置 OK:', Object.keys(c).join(','))"
+
+      - name: 上传部署产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: edgeone-publish
+          path: edgeone-publish/
+          retention-days: 7
+
+  edgeone-deploy:
+    name: EdgeOne 实际部署（未配 token 时跳过）
+    runs-on: ubuntu-latest
+    needs: [build-check, edgeone-build]
+    if: github.event_name != 'pull_request'
+    env:
+      EDGEONE_API_TOKEN: ${{ secrets.EDGEONE_API_TOKEN }}
+      EDGEONE_CN_API_TOKEN: ${{ secrets.EDGEONE_CN_API_TOKEN }}
+      EDGEONE_PROJECT: ${{ vars.EDGEONE_PROJECT }}
+      EDGEONE_CN_PROJECT: ${{ vars.EDGEONE_CN_PROJECT }}
+      EDGEONE_ENV: ${{ vars.EDGEONE_ENV }}
+    steps:
+      - name: 检查部署凭据
+        id: creds
+        run: |
+          if [ -n "$EDGEONE_API_TOKEN" ]; then echo "global=true" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$EDGEONE_CN_API_TOKEN" ]; then echo "china=true" >> "$GITHUB_OUTPUT"; fi
+          if [ -z "$EDGEONE_API_TOKEN" ] && [ -z "$EDGEONE_CN_API_TOKEN" ]; then
+            echo "::notice::未配置 EDGEONE_API_TOKEN / EDGEONE_CN_API_TOKEN secrets，跳过 EdgeOne 部署"
+          fi
+
+      - name: 下载构建产物
+        if: steps.creds.outputs.global == 'true' || steps.creds.outputs.china == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: edgeone-publish
+          path: edgeone-publish
+
+      - name: 部署国际站（global）
+        if: steps.creds.outputs.global == 'true'
+        run: |
+          PROJECT="${EDGEONE_PROJECT:-cloudreve-worker-edgeone}"
+          npx --yes edgeone makers deploy ./edgeone-publish \
+            -n "$PROJECT" -t "$EDGEONE_API_TOKEN" \
+            --site global -e "${EDGEONE_ENV:-production}"
+
+      - name: 部署中国站（china）
+        if: steps.creds.outputs.china == 'true'
+        run: |
+          PROJECT="${EDGEONE_CN_PROJECT:-cloudreve-worker-edgeone-cn}"
+          npx --yes edgeone makers deploy ./edgeone-publish \
+            -n "$PROJECT" -t "$EDGEONE_CN_API_TOKEN" \
+            --site china -e "${EDGEONE_ENV:-production}"
