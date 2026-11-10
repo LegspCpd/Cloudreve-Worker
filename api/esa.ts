@@ -36,9 +36,34 @@ export default {
     context: EsaContext | undefined,
     envVars: Record<string, string> | undefined,
   ): Promise<Response> {
-    const env = {
+    const merged = {
       ...(globalThis as { process?: { env?: Record<string, string> } }).process?.env,
       ...(envVars ?? {}),
+    } as Record<string, string>;
+
+    // 不进 Hono、不查库的运行时诊断：ESA 上运行出错时先分清「变量没传进来」
+    // 和「DB 子请求被平台限额掐断」。只回布尔与脱敏 host，不回任何密钥。
+    if (new URL(request.url).pathname === '/__esa_diag') {
+      const raw = merged.DATABASE_URL ?? '';
+      let host = '';
+      try {
+        host = raw ? new URL(raw.replace(/^postgres(ql)?:/, 'http:')).hostname : '';
+      } catch {
+        host = '(unparseable)';
+      }
+      return Response.json({
+        runtime: 'esa',
+        hasDatabaseUrl: !!raw,
+        databaseHost: host,
+        hasJwtSecret: !!merged.JWT_SECRET,
+        hasSiteUrl: !!merged.SITE_URL,
+        envFromFetchArg: Object.keys(envVars ?? {}).length > 0,
+        skipBootstrap: merged.ESA_SKIP_BOOTSTRAP === '1',
+      });
+    }
+
+    const env = {
+      ...merged,
       // ESA 没有 TCP socket：非 Neon 的 PostgreSQL 连不上，显式钉死驱动，
       // 免得 resolveDriverKind 按域名落到 postgres.js 分支（那里只有 stub）。
       DB_PROVIDER: 'neon',

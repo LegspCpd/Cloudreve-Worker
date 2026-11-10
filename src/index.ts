@@ -161,7 +161,16 @@ app.use('*', async (c, next) => {
   //
   // 已确认过的 isolate 直接短路 —— 这一条是**热路径**上的关键优化，
   // 见 `bootstrapConfirmed` 的注释。
-  if (!bootstrapConfirmed) {
+  // ESA 专用逃生口：ESA 单次执行最多 4 个 fetch 子请求，自举要跑 17 个迁移
+  // + 播种必然超限，每个请求都会 503。库由外部预初始化（复用已有部署的库，
+  // 或本地跑 `node scripts/seed.mjs`）后，配 ESA_SKIP_BOOTSTRAP=1 跳过整个
+  // 自举，只留 settings/ensureEnvAdmin/业务查询（1~3 次）在预算内。
+  // 其它平台不配这个变量，行为完全不变。
+  const skipBootstrap =
+    (c.env as unknown as Record<string, string | undefined>).ESA_SKIP_BOOTSTRAP === '1';
+  if (skipBootstrap) {
+    bootstrapConfirmed = true;
+  } else if (!bootstrapConfirmed) {
     // 冷启动时「读自举标记」与「读设置」互不依赖，先把设置读取挂起来并行跑，
     // 后面 appContext 会 await 同一个 Promise（见 settings/provider.ts）。
     prefetchSettings(c.env, (p) => c.executionCtx.waitUntil(p));
