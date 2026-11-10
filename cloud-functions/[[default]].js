@@ -1721,7 +1721,130 @@ data: ${JSON.stringify($??"")}
 </html>`}async function Mp(t,e,n,r,i){let s=e.settings,o={siteName:s.siteName,title:s.siteName,description:s.get("siteDescription","")||s.siteTitle,shareUrl:s.siteUrl.replace(/\/+$/,"")+t.req.path,imageUrl:"",redirectUrl:i},a=s.get("pwa_large_icon","/static/img/logo512.png");o.imageUrl=/^https?:\/\//.test(a)?a:s.siteUrl.replace(/\/+$/,"")+a;let c=new It(e,new re(e));try{let l=await c.info(n,{password:r,countViews:!1});o.title=l.name??o.title,l.source_type===1?o.description="Folder":l.unlocked&&(o.description=VI(Number(l.size??0))),l.owner.anonymous||(o.description+=" \xB7 "+l.owner.nickname)}catch(l){o.description=l instanceof Error?l.message:"Invalid Link"}return t.html(QI(o))}var fb="bootstrap:cooldown:v1",cl=null,Fp=!1,qp=null;function YI(t){return qp||(qp=ew(t).catch(e=>{console.error("env admin bootstrap failed",Et(e))})),qp}var je=new ze;je.use("*",async(t,e)=>{let n=Wu();try{await Gu(n,e)}finally{try{t.executionCtx.waitUntil(Oa(n))}catch{await Oa(n)}}});je.use("*",async(t,e)=>{if(t.env.ESA_SKIP_BOOTSTRAP==="1")Fp=!0;else if(!Fp){Ad(t.env,r=>t.executionCtx.waitUntil(r));try{let[r]=await Promise.all([K(t.env,"flag").get(Ao),lo(t.env)]);if(!r){if(await K(t.env,"flag").get(fb))return t.json({code:50006,msg:"\u7AD9\u70B9\u6B63\u5728\u521D\u59CB\u5316\uFF08\u521A\u90E8\u7F72\u6216\u6570\u636E\u5E93\u6682\u65F6\u4E0D\u53EF\u7528\uFF09\uFF0C\u8BF7\u51E0\u79D2\u540E\u5237\u65B0\u91CD\u8BD5"},503);cl||(cl=(async()=>{let i=Tt(t.env);await Qy(t.env,i),await So(t.env,i),await _c(t.env),await K(t.env,"flag").put(Ao,"1")})().catch(async i=>{cl=null;try{await K(t.env,"flag").put(fb,"1",{expirationTtl:20})}catch{}throw i})),await cl}Fp=!0}catch(r){return console.error("bootstrap failed",Et(r)),t.json({code:50006,msg:"\u7AD9\u70B9\u6B63\u5728\u521D\u59CB\u5316\uFF08\u6570\u636E\u5E93\u6682\u65F6\u4E0D\u53EF\u7528\uFF09\uFF0C\u8BF7\u51E0\u79D2\u540E\u5237\u65B0\u91CD\u8BD5"},503)}}await YI(t.env),await e()});je.use("/api/*",Nl({origin:(t,e)=>{let n=(e.env.CORS_ALLOW_ORIGINS??"").split(",").map(r=>r.trim()).filter(Boolean);return n.length===0||!t?"":n.includes(t)?t:""},allowMethods:["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"],allowHeaders:["Authorization","Content-Type","Range","If-Range","X-Correlation-ID"],exposeHeaders:["Content-Range","Accept-Ranges","Content-Length","Content-Disposition","ETag"],credentials:!0,maxAge:86400}));je.use("*",uy());je.use("*",xy());je.use("*",Ny());je.use("*",dy());je.use("*",pb());je.use("*",Iy());je.route("/api/v4/site",wn);je.route("/api/v4/session",Je);je.route("/api/v4/user",ut);je.route("/api/v4/file",Te);je.route("/api/v4/share",sn);je.route("/api/v4/admin",Fe);je.route("/api/v4/workflow",an);je.route("/api/v4/payment/admin",mi);je.route("/api/v4/payment",jn);je.route("/api/v4/callback",jo);je.route("/api/v4/slave",fi);je.route("/api/v4/devices",fs);je.route("/dav",Ht);je.get("/manifest.json",t=>{let e=B(t).settings;return t.header("Cache-Control","public, no-cache"),t.json({short_name:e.siteName,name:e.siteName,icons:[{src:e.get("pwa_small_icon","/static/img/favicon.ico"),sizes:"64x64 32x32 24x24 16x16",type:"image/x-icon"},{src:e.get("pwa_medium_icon","/static/img/logo192.png"),type:"image/png",sizes:"192x192"},{src:e.get("pwa_large_icon","/static/img/logo512.png"),type:"image/png",sizes:"512x512"}],start_url:".",display:e.get("pwa_display","standalone"),theme_color:e.get("pwa_theme_color","#000000"),background_color:e.get("pwa_background_color","#ffffff")})});var hb=Nl({origin:"*",allowMethods:["GET","HEAD","OPTIONS"],allowHeaders:["Range","If-Range","Authorization","Content-Type"],exposeHeaders:["Content-Range","Accept-Ranges","Content-Length","Content-Disposition","ETag"],credentials:!1});je.use("/api/v4/file/content/*",hb);je.use("/f/*",hb);je.get("/s/:id",t=>{let e=B(t),n=new It(e,new re(e)),r=new URL(t.req.url).searchParams,i=n.shortLinkRedirect(t.req.param("id"),void 0,r);return $p(t.req.header("User-Agent"))?Mp(t,e,t.req.param("id"),void 0,i):t.redirect(i,302)});je.get("/s/:id/:password",t=>{let e=B(t),n=new It(e,new re(e)),r=new URL(t.req.url).searchParams,i=n.shortLinkRedirect(t.req.param("id"),t.req.param("password"),r);return $p(t.req.header("User-Agent"))?Mp(t,e,t.req.param("id"),t.req.param("password"),i):t.redirect(i,302)});je.get("/f/:id/:name",async t=>{let e=B(t),n=new re(e),r=new Kt(e,n);try{let i=await r.visitDirectLink(t.req.param("id"));return t.header("Cache-Control","no-store"),t.redirect(i,302)}catch(i){return x(t,i,404)}});async function JI(t){let e=t.env.FRONTEND_URL?.replace(/\/+$/,"");if(e){let n=new URL(t.req.url),r=`${e}${n.pathname}${n.search}`,i=new Request(r,t.req.raw);return i.headers.delete("host"),fetch(i)}return t.env.ASSETS?t.env.ASSETS.fetch(t.req.raw):t.text(`Cloudreve Edge \u540E\u7AEF\u5DF2\u5C31\u7EEA\uFF0C\u4F46\u6CA1\u6709\u914D\u7F6E\u524D\u7AEF\u3002
 \u8BF7\u4E8C\u9009\u4E00\uFF1A\u914D\u7F6E wrangler.toml \u7684 [assets] \u6307\u5411\u5B98\u65B9\u524D\u7AEF\u6784\u5EFA\u4EA7\u7269\uFF0C\u6216\u8BBE\u7F6E FRONTEND_URL \u6307\u5411\u5DF2\u90E8\u7F72\u7684\u5B98\u65B9\u524D\u7AEF\u3002
 API \u5165\u53E3\uFF1A/api/v4/site/ping
-`,404)}je.notFound(async t=>t.req.path.startsWith("/api/")?x(t,new v(404,"API endpoint not found")):JI(t));je.onError((t,e)=>{let n=t instanceof v?t:new v(50005,"Internal server error",t);return x(e,n)});async function ZI(t,e){if(!e.ASSETS)return null;let{pathname:n}=new URL(t.url);if(!n.startsWith("/assets/")||t.method!=="GET"&&t.method!=="HEAD")return null;let r=await e.ASSETS.fetch(t);return r.headers.get("content-type")?.includes("text/html")?new Response("Not Found",{status:404,headers:{"content-type":"text/plain; charset=utf-8","cache-control":"no-store"}}):r}async function eA(t,e,n){try{let r=await ZI(t,e);return r||await je.fetch(t,e,n)}catch(r){let i=t.headers.get("X-Correlation-ID")??crypto.randomUUID();return console.error("unhandled error escaped Hono",Et(r)),new Response(JSON.stringify({code:50005,msg:"Internal server error",correlation_id:i}),{status:200,headers:{"Content-Type":"application/json; charset=utf-8","X-Correlation-ID":i}})}}var mb={fetch:eA,async scheduled(t,e,n){await is(e)}};var gb=`<!doctype html><html><body><div id="root"></div>  <script>/* __edge_self_heal */
+`,404)}je.notFound(async t=>t.req.path.startsWith("/api/")?x(t,new v(404,"API endpoint not found")):JI(t));je.onError((t,e)=>{let n=t instanceof v?t:new v(50005,"Internal server error",t);return x(e,n)});async function ZI(t,e){if(!e.ASSETS)return null;let{pathname:n}=new URL(t.url);if(!n.startsWith("/assets/")||t.method!=="GET"&&t.method!=="HEAD")return null;let r=await e.ASSETS.fetch(t);return r.headers.get("content-type")?.includes("text/html")?new Response("Not Found",{status:404,headers:{"content-type":"text/plain; charset=utf-8","cache-control":"no-store"}}):r}async function eA(t,e,n){try{let r=await ZI(t,e);return r||await je.fetch(t,e,n)}catch(r){let i=t.headers.get("X-Correlation-ID")??crypto.randomUUID();return console.error("unhandled error escaped Hono",Et(r)),new Response(JSON.stringify({code:50005,msg:"Internal server error",correlation_id:i}),{status:200,headers:{"Content-Type":"application/json; charset=utf-8","X-Correlation-ID":i}})}}var mb={fetch:eA,async scheduled(t,e,n){await is(e)}};var gb=`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="shortcut icon" href="/static/img/favicon.ico" sizes="64x64" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,shrink-to-fit=no"
+    />
+    <meta name="theme-color" content="#1976d2" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="description" content="Cloudreve" />
+    <title>Cloudreve</title>
+    <script>
+      window.subTitle = "Cloudreve";
+    </script>
+    <style>
+      #app-loader {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background-color: #f5f5f5;
+        z-index: 9999;
+      }
+      #app-loader .logo {
+        width: 120px;
+        height: 120px;
+        margin-bottom: 32px;
+        background-image: url("/static/img/logo192.png");
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: contain;
+        opacity: 0;
+        transform: scale(0.8);
+        animation: fadeIn 0.6s ease-out 0.3s forwards;
+      }
+      #app-loader .spinner {
+        width: 28px;
+        height: 28px;
+        position: relative;
+        opacity: 0;
+        transform: scale(0.8);
+        animation: fadeIn 0.6s ease-out 0.3s forwards;
+      }
+      #app-loader .spinner {
+        display: inline-block;
+        width: 40px;
+        height: 40px;
+      }
+      #app-loader .spinner svg {
+        display: block;
+      }
+      #app-loader .spinner .stroke {
+        stroke: #1976d2;
+        stroke-linecap: round;
+        animation: spinDash 1.4s ease-in-out infinite;
+      }
+      #app-loader .spinner .background {
+        stroke: rgba(0, 0, 0, 0.1)
+      }
+
+      @keyframes spinDash {
+        0% {
+          stroke-dasharray: 1px, 200px;
+          stroke-dashoffset: 0;
+        }
+        50% {
+          stroke-dasharray: 100px, 200px;
+          stroke-dashoffset: -15px;
+        }
+        100% {
+          stroke-dasharray: 1px, 200px;
+          stroke-dashoffset: -126px;
+        }
+      }
+      @keyframes fadeIn {
+        to {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
+    </style>
+    <link rel="preload" as="script" crossorigin href="/assets/index-C-PK1Yii.js">
+  <script fetchpriority="high" async type="module" crossorigin src="/assets/index-C-PK1Yii.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/common-5dK6VpSw.js">
+    <link rel="modulepreload" crossorigin href="/assets/react-CV3HRGEF.js">
+    <link rel="stylesheet" crossorigin href="/assets/react-4-pFdlfx.css" media="print" onload="this.media='all'">
+    <link rel="stylesheet" crossorigin href="/assets/index-qQxd8I_f.css" media="print" onload="this.media='all'">
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/assets/roboto-latin-400-normal-mTIRXP6Y.woff2">
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="/assets/roboto-latin-500-normal-Dxdx3aXO.woff2">
+    <link rel="preload" as="image" href="/static/img/logo192.png">
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="app-loader">
+      <div class="logo"></div>
+      <div class="spinner">
+        <svg viewBox="22 22 44 44">
+          <circle class="background" cx="44" cy="44" r="20" fill="none" stroke-width="4"></circle>
+          <circle class="stroke" cx="44" cy="44" r="20" fill="none" stroke-width="4"></circle>
+        </svg>
+      </div>
+    </div>
+    <div id="root"></div>
+    <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        // Hide loader when the app has loaded
+        const appRoot = document.getElementById("root");
+        const observer = new MutationObserver(function (mutations) {
+          if (appRoot.children.length > 0) {
+            document.getElementById("app-loader").style.display = "none";
+            observer.disconnect();
+          }
+        });
+        observer.observe(appRoot, { childList: true });
+      });
+    </script>
+    <script>/* __edge_self_heal */
 (function () {
   var KEY = 'edge:selfheal';
 
@@ -1768,7 +1891,10 @@ API \u5165\u53E3\uFF1A/api/v4/site/ping
     }).catch(function () {});
   }, 6000);
 })();</script>
-</body></html>`;Ge();var nA=["/api/","/dav","/s/","/f/","/manifest.json"],rA=/\.[a-zA-Z0-9]+$/;async function iA(t){let e={...globalThis.process?.env};oA(e);let n=t.request,r=new URL(n.url),i=n.headers.get("accept")??"",s=nA.some(c=>r.pathname===c.replace(/\/$/,"")||r.pathname.startsWith(c));if((n.method==="GET"||n.method==="HEAD")&&i.includes("text/html")&&!s&&!rA.test(r.pathname))return new Response(gb,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-cache"}});let a=n;if(n.method!=="GET"&&n.method!=="HEAD"){let c=await n.arrayBuffer();a=new Request(n.url,{method:n.method,headers:n.headers,body:c.byteLength>0?c:void 0})}return mb.fetch(a,e,{waitUntil:c=>c,passThroughOnException:()=>{}})}var bq=iA,yb=0,sA=3600*1e3;async function oA(t){let e=Date.now();if(!(e-yb<6e4)){yb=e;try{let n=K(t,"flag"),r=Number(await n.get("cron:last-run")??0);if(e-r<sA)return;await n.put("cron:last-run",String(e),{expirationTtl:86400}),is(t)}catch{}}}export{bq as default,iA as onRequest};
+</body>
+  
+</html>
+`;Ge();var nA=["/api/","/dav","/s/","/f/","/manifest.json"],rA=/\.[a-zA-Z0-9]+$/;async function iA(t){let e={...globalThis.process?.env};oA(e);let n=t.request,r=new URL(n.url),i=n.headers.get("accept")??"",s=nA.some(c=>r.pathname===c.replace(/\/$/,"")||r.pathname.startsWith(c));if((n.method==="GET"||n.method==="HEAD")&&i.includes("text/html")&&!s&&!rA.test(r.pathname))return new Response(gb,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-cache"}});let a=n;if(n.method!=="GET"&&n.method!=="HEAD"){let c=await n.arrayBuffer();a=new Request(n.url,{method:n.method,headers:n.headers,body:c.byteLength>0?c:void 0})}return mb.fetch(a,e,{waitUntil:c=>c,passThroughOnException:()=>{}})}var bq=iA,yb=0,sA=3600*1e3;async function oA(t){let e=Date.now();if(!(e-yb<6e4)){yb=e;try{let n=K(t,"flag"),r=Number(await n.get("cron:last-run")??0);if(e-r<sA)return;await n.put("cron:last-run",String(e),{expirationTtl:86400}),is(t)}catch{}}}export{bq as default,iA as onRequest};
 /*! Bundled license information:
 
 @neondatabase/serverless/index.mjs:
