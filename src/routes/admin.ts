@@ -112,9 +112,8 @@ adminRoutes.use('*', async (c, next) => {
   await next();
 });
 
-// 内容类管理端点（用户 / 文件 / 实体 / 分享 / 任务 / 节点 / OAuth 应用）。
-// 挂在同一前缀下，上面那条管理员中间件对挂载进来的路由同样生效。
-adminRoutes.route('/', adminContentRoutes);
+// 内容类管理端点挂在文件末尾（见下方注册处）——必须晚于本文件所有具体
+// 路由，否则 `/share/:id` 这类带参数的路由会把 `/share/report` 抢走。
 
 /**
  * 审计日志列表（管理端「事件」页的查看器，边缘版自建）。
@@ -1377,5 +1376,12 @@ for (const [path, message] of Object.entries(NOT_IMPLEMENTED_ADMIN)) {
     fail(c, new AppError(CodeFeatureNotEnabled, message)),
   );
 }
+
+// 内容类管理端点（用户 / 文件 / 实体 / 分享 / 任务 / 节点 / OAuth 应用）。
+// ⚠️ 必须放在本文件所有具体路由之后：Hono 按注册顺序匹配，
+// `adminContentRoutes.get('/share/:id')` 会把 `/share/report` 当成
+// id="report" 抢先命中，举报列表直接报 40058 Share link not found（生产实测）。
+// 上面那条管理员中间件对挂载进来的路由同样生效。
+adminRoutes.route('/', adminContentRoutes);
 
 export { toByteaLiteral, GroupPermission };
