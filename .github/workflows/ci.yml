@@ -11,6 +11,8 @@
 #      EdgeOne Makers（国际站 / 中国站），否则只打 notice 跳过。
 #      ⚠️ 若 EdgeOne 项目仍绑着 Git 集成，push 会两套流程各部署一遍 ——
 #      想以 Actions 为准就先关掉控制台的 Git 集成。
+#   5. esa-build：阿里云 ESA 完整构建 + 4MB 代码包上限校验 + 产物 artifact，
+#      不要凭据；部署走 ESA 控制台的 GitHub 集成（esa.jsonc）。
 #
 # 为什么要在 CI 里发前端包：CF 的构建机拿不到「另一条流水线的缓存」，
 # 它只能按包名去 Release 下 —— 包名 = commit + 补丁内容哈希，而改过
@@ -336,3 +338,58 @@ jobs:
           npx --yes edgeone makers deploy ./edgeone-publish \
             -n "$PROJECT" -t "$EDGEONE_CN_API_TOKEN" \
             --site china -e "${EDGEONE_ENV:-production}"
+
+  # -------------------------------------------------------------------------
+  # 阿里云 ESA（函数和 Pages）：构建校验
+  #
+  #   ESA 是 V8 isolate + 部分 Node APIs，跟 EdgeOne 的 Node 云函数不是一回事：
+  #   没有 net/tls（数据库只能 Neon HTTP、SMTP 直连不可用）、没有 KV 绑定
+  #   （走 DB 兜底）、SPA 导航由 esa.jsonc 的 notFoundStrategy 处理。
+  #   build-esa.mjs 用 platform=browser 打包并把 TCP 相关模块替换成 stub，
+  #   产物 dist-server/esa.js 必须小于 ESA 的 4MB 代码包上限。
+  #
+  #   部署走 ESA 控制台的 GitHub 集成（esa.jsonc 自动生效），或本地
+  #   esa-cli login/deploy。这里不塞没实测过的非交互部署命令。
+  # -------------------------------------------------------------------------
+  esa-build:
+    name: ESA 构建 + 产物校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 缓存前端产物
+        uses: actions/cache@v4
+        with:
+          path: frontend
+          key: frontend-${{ hashFiles('scripts/fetch-frontend.mjs', 'frontend-patches/**') }}
+
+      - name: 安装依赖
+        run: npm install
+
+      - name: 完整构建（前端 + ESA 函数入口）
+        run: node scripts/build-esa.mjs
+
+      - name: 校验产物与 4MB 代码包上限
+        run: |
+          test -s dist/index.html
+          test -s dist-server/esa.js
+          node -e "const b=require('fs').statSync('dist-server/esa.js').size; if(b>4*1024*1024) throw new Error('超过 ESA 4MB 代码包上限: '+b); console.log('esa.js', (b/1024).toFixed(0)+' KiB < 4MB')"
+          grep -q 'singlePageApplication' esa.jsonc
+          ! grep -q 'cloudflare:sockets' dist-server/esa.js
+          ! grep -q 'node:net' dist-server/esa.js
+          ! grep -q 'node:tls' dist-server/esa.js
+
+      - name: 上传部署产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: esa-publish
+          path: |
+            dist/
+            dist-server/
+            esa.jsonc
+          retention-days: 7

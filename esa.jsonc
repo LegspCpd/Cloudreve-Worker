@@ -1,0 +1,10 @@
+{
+  "name": "cloudreve-edge",
+  "entry": "./dist-server/esa.js",
+  "installCommand": "npm install",
+  "buildCommand": "node scripts/build-esa.mjs",
+  "assets": {
+    "directory": "./dist",
+    "notFoundStrategy": "singlePageApplication"
+  }
+}
