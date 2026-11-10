@@ -100,8 +100,7 @@ export async function hitRateLimit(
     return { ok: true, retryAfter: 0, count };
   } catch (e) {
     // 计数失败**放行**：宁可在数据库出问题时让人登录，也不要因为计数表挂了
-    // 把所有人锁在门外。但必须留日志 —— ESA 上曾出现「hits 永远是 1」
-    // 而这里一声不吭，排查只能靠猜（平台子请求限额 / 驱动差异都有可能）。
+    // 把所有人锁在门外。留日志便于定位驱动/数据库异常（别静默吞掉）。
     console.warn('[rate-limit] bump failed, allowing request', describeError(e));
     return { ok: true, retryAfter: 0, count: 0 };
   }
