@@ -428,7 +428,7 @@ export class FileSystemService {
     if (share.password && !isOwner && (uri.password || '') !== share.password) {
       const gate = await hitRateLimit(this.ctx.env, {
         ...RATE_LIMITS.sharePassword,
-        id: `${shareId}:${this.ctx.clientIp}`,
+        id: String(shareId),
       });
       if (!gate.ok) {
         throw new AppError(

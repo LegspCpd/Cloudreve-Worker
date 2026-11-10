@@ -54,8 +54,13 @@ export function windowStartOf(windowSec: number): number {
 
 /** 键：bucket + id + 窗口长度。id 里可能有冒号/邮箱，直接拼但带上长度更稳。 */
 export function rateKeyOf(opts: RateLimitOptions): string {
-  // IP 维度按网段归一，避免边缘平台出口 IP 轮换把计数打散。
-  return `${opts.bucket}|${opts.windowSec}|${normalizeRateLimitId(opts.id)}`;
+  // 按 IP 的桶收敛成站点级共享键。边缘平台（线上实测 ESA）每次请求的出口
+  // IP 会在多个 /24 与 IPv6 /32 间轮换，连按网段归一都会被拆成 hits<20 的
+  // 多个桶；客户端还能伪造 IP 头。既然 IP 不可信也不稳定，就别让它决定
+  // 限速 key —— 目标维度的桶（loginByEmail、sharePassword 按分享 id）才是
+  // 真正防爆破的那一层。共享桶阈值按站点规模放宽，见 RATE_LIMITS。
+  const id = opts.bucket.endsWith(':ip') ? 'shared' : normalizeRateLimitId(opts.id);
+  return `${opts.bucket}|${opts.windowSec}|${id}`;
 }
 
 function sqlStore(env: Env): RateLimitStore {
@@ -134,11 +139,11 @@ export const RATE_LIMITS = {
   /** 同一邮箱登录：10 次 / 分钟（正常用户不会打这么快） */
   loginByEmail: { bucket: 'login:email', limit: 10, windowSec: 60 },
   /** 同一网段登录：200 次 / 分钟（桶按 /24 或 /32 归一，需给共享出口留余量） */
-  loginByIp: { bucket: 'login:ip', limit: 200, windowSec: 60 },
+  loginByIp: { bucket: 'login:ip', limit: 100, windowSec: 60 },
   /** 同一 2FA 会话：6 次 / 分钟（6 位 TOTP 打满要 100 万年） */
   twoFactor: { bucket: 'login:2fa', limit: 6, windowSec: 60 },
   /** 同一 IP 注册：5 次 / 分钟 */
-  registerByIp: { bucket: 'register:ip', limit: 30, windowSec: 60 },
+  registerByIp: { bucket: 'register:ip', limit: 20, windowSec: 60 },
   /** 同一 IP 发找回密码邮件：3 次 / 5 分钟（防被当成邮件轰炸机） */
   resetByIp: { bucket: 'reset:ip', limit: 20, windowSec: 300 },
   /** 同一分享 + IP 猜密码：10 次 / 分钟 */
@@ -148,7 +153,7 @@ export const RATE_LIMITS = {
    * 定得比登录宽：客户端拿到 401 会重试几轮，且多人共用一个出口 IP 很常见；
    * 30 次/分钟已足够把在线爆破压到无意义的速率。
    */
-  davAuthByIp: { bucket: 'dav:auth:ip', limit: 150, windowSec: 60 },
+  davAuthByIp: { bucket: 'dav:auth:ip', limit: 100, windowSec: 60 },
   /**
    * 同一 IP 的第三方登录回调：20 次 / 分钟。
    *
@@ -156,5 +161,5 @@ export const RATE_LIMITS = {
    * 应用配额（QQ 互联、各类 OIDC 提供方都有日调用上限）。正常用户一分钟
    * 只走一次，20 次足够覆盖重试。
    */
-  socialCallbackByIp: { bucket: 'social:cb:ip', limit: 120, windowSec: 60 },
+  socialCallbackByIp: { bucket: 'social:cb:ip', limit: 60, windowSec: 60 },
 } as const;

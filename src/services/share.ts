@@ -271,7 +271,7 @@ export class ShareService {
     if (!passwordOk) {
       const gate = await hitRateLimit(this.ctx.env, {
         ...RATE_LIMITS.sharePassword,
-        id: `${share.id}:${this.ctx.clientIp}`,
+        id: String(share.id),
       });
       if (!gate.ok) {
         throw new AppError(
