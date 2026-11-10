@@ -37,6 +37,7 @@
  * 付费/订单/兑换码相关的一切在原版社区版里就不存在，边缘版同样没有。
  */
 import { Hono } from 'hono';
+import { safeFetch } from '../lib/ssrf';
 import type { Context } from 'hono';
 import type { AppBindings } from '../middleware/app';
 import { ctxOf } from '../middleware/app';
@@ -105,7 +106,11 @@ adminRoutes.use('*', async (c, next) => {
 
   const method = c.req.method.toUpperCase();
   const path = (c.req.path.replace(/^\/api\/v4\/admin/, '') || '/').replace(/\/+$/, '') || '/';
-  const isWrite = method !== 'GET' && method !== 'HEAD' && !READ_ONLY_POSTS.has(path);
+  // 只豁免「POST + 只读列表端点」。原来写成 !READ_ONLY_POSTS.has(path)，
+  // 落在同名路径上的 PATCH/PUT/DELETE（改设置、建组、建用户）也被当成只读，
+  // 绕过了 Admin.Write scope 校验。
+  const isReadOnlyPost = method === 'POST' && READ_ONLY_POSTS.has(path);
+  const isWrite = method !== 'GET' && method !== 'HEAD' && !isReadOnlyPost;
   if (isWrite && !ctx.hasScopes(['Admin.Write'])) {
     return fail(c, Err.scopeInsufficient('Admin.Write'));
   }
@@ -1313,7 +1318,8 @@ adminRoutes.get('/tool/wopi', async (c) => {
 
   let res: Response;
   try {
-    res = await fetch(discoveryUrl, { signal: AbortSignal.timeout(15000) });
+    // endpoint 是管理员可填的外部地址；裸 fetch 会跟随 302 到内网。
+    res = await safeFetch(discoveryUrl.toString(), { signal: AbortSignal.timeout(15000) });
   } catch (e) {
     return fail(c, Err.param(`Failed to reach WOPI discovery: ${(e as Error).message}`));
   }

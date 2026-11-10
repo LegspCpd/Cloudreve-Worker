@@ -378,11 +378,15 @@ siteRoutes.get('/cache-status', async (c) => {
     note: '清理只覆盖 purge=true 的条目；自举标记（flag 角色）永不清理，否则会触发站点重新自举。',
   };
 
-  if (q.get('refresh') === '1') {
+  // refresh / purge 会打库、清 KV，匿名高频调用就是现成的 DoS 放大器。
+  // 只读查询保持匿名，写操作要求管理员。
+  const ctx = ctxOf(c);
+  const canWriteOps = !!ctx.user && !!ctx.isAdmin;
+  if (q.get('refresh') === '1' && canWriteOps) {
     const warmed = await warmAllCaches(env);
     result.refresh = warmed;
   }
-  if (q.get('purge') === '1') {
+  if (q.get('purge') === '1' && canWriteOps) {
     const purged = await purgeAllCaches(env);
     result.purge = purged;
     result.purge_note =

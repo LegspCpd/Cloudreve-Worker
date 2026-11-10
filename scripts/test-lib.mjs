@@ -104,6 +104,35 @@ try {
   check('无 % 的路径原样返回', safeDecodePath('plain/path/file.mp3') === 'plain/path/file.mp3');
   check('空串安全', safeDecodePath('') === '');
   check('不全解码（只解 % 段）', safeDecodePath('a%20b/plain') === 'a b/plain');
+
+  console.log('\n[7] clientIpFromHeaders（限速桶 key 不能被客户端伪造）');
+  const ipBundle = path.join(outDir, 'clientIp.mjs');
+  await build({
+    entryPoints: [path.join(ROOT, 'src/lib/clientIp.ts')],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node20',
+    outfile: ipBundle,
+    logLevel: 'silent',
+  });
+  const { clientIpFromHeaders } = await import(`file://${ipBundle}`);
+  const headers = (o) => (name) => o[name];
+  check(
+    'CF 平台注入的头优先（平台会覆盖客户端伪造值）',
+    clientIpFromHeaders(headers({ 'CF-Connecting-IP': '1.2.3.4' })) === '1.2.3.4',
+  );
+  check(
+    'XFF 取最右一段（可信反代追加的）',
+    clientIpFromHeaders(headers({ 'X-Forwarded-For': '1.1.1.1, 2.2.2.2, 3.3.3.3' })) === '3.3.3.3',
+  );
+  check(
+    '客户端伪造的 XFF 首段不生效',
+    clientIpFromHeaders(headers({ 'X-Forwarded-For': '9.9.9.9, 8.8.8.8' })) === '8.8.8.8',
+  );
+  check('XFF 单段', clientIpFromHeaders(headers({ 'X-Forwarded-For': ' 5.6.7.8 ' })) === '5.6.7.8');
+  check('全空回落 unknown', clientIpFromHeaders(headers({})) === 'unknown');
+  check('空段不干扰', clientIpFromHeaders(headers({ 'X-Forwarded-For': ' , , 7.7.7.7 , ' })) === '7.7.7.7');
 } catch (e) {
   failed += 1;
   console.error('\n  ERROR', e instanceof Error ? e.message : e);

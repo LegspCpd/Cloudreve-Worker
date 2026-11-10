@@ -4,7 +4,7 @@
  * 签名值格式：`base64url(HMAC-SHA256(body + ":" + expires)) + ":" + expires`
  *   - `body` 对 URL 签名而言就是**路径**（不含 query，见 `getUrlSignContent`）；
  *   - base64url **带 `=` 填充**，与上游 Go 的 `base64.URLEncoding` 一致；
- *   - `expires` 为 0 表示永不过期；
+ *   - `expires` 为 0 的签名不再被 check 接受（签发即无法撤销）；
  *   - 校验时从签名串尾部解析有效期，先判过期再比对摘要。
  *
  * 签名以 `?sign=` 查询参数附加到 URL 上（原版 `SignURI`）。
@@ -47,7 +47,12 @@ export class Signer {
     if (!Number.isFinite(expires)) {
       throw new AppError(CodeInvalidSign, 'sign expired');
     }
-    if (expires !== 0 && expires < Math.floor(Date.now() / 1000)) {
+    // 0 = 永不过期。签名 URL 一经签发无法撤销（属主删分享、封禁都管不到），
+    // 绝不能签发无过期凭证；历史上 thumb() 漏传 expires 导致永久可重放。
+    if (expires === 0) {
+      throw new AppError(CodeSignExpired, 'signature has no expiry');
+    }
+    if (expires < Math.floor(Date.now() / 1000)) {
       throw new AppError(CodeSignExpired, 'signature expired');
     }
     const expected = await this.sign(body, expires);
@@ -58,7 +63,7 @@ export class Signer {
   }
 
   /** 给 URL 附加 `sign` 查询参数。 */
-  async signUrl(url: string, expires = 0): Promise<string> {
+  async signUrl(url: string, expires = Math.floor(Date.now() / 1000) + 3600): Promise<string> {
     const parsed = new URL(url);
     const sign = await this.sign(pathOf(parsed), expires);
     parsed.searchParams.set('sign', sign);

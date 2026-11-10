@@ -243,7 +243,10 @@ export class WorkflowService {
       }
       throw Err.param('Invalid URL');
     }
-    void parsed;
+    // 校验结果不能丢：从节点在真实网络里下载，只认 URL 字符串。
+    // 必须用规范化后的地址（new URL 会把十进制/八进制 IP 等还原成字面量），
+    // 否则「校验通过的字符串」和「实际请求的地址」不是同一个东西。
+    const safeUrl = parsed.toString();
 
     const task = await this.ctx.tasks.create({
       type: 'remote_download',
@@ -258,7 +261,7 @@ export class WorkflowService {
       const dispatch = await dispatchRemoteDownload(this.ctx.env, {
         taskId: task.id,
         userId: user.id,
-        url: args.url,
+        url: safeUrl,
         dst: args.dst,
       });
       if (dispatch) {
@@ -291,13 +294,13 @@ export class WorkflowService {
     try {
       // 先 HEAD 拿长度；拿不到就按流式未知长度处理（上传会话必须要一个确定长度，
       // 所以这里退化为「先取到内存上限内」——超过上限直接报太大）
-      const head = await safeFetch(args.url, { method: 'HEAD' }).catch(() => null);
+      const head = await safeFetch(safeUrl, { method: 'HEAD' }).catch(() => null);
       let declared = Number(head?.headers.get('content-length') ?? 0);
       // HEAD 拿不到长度时（常见，尤其 CDN/对象存储不回 content-length）再用一次
       // Range 探测 GET 取总大小；仍拿不到就明确报错 —— Worker 上传需要明确大小，
       // 不能默默以 0 字节落地成空文件，也绝不能绕过 MAX_WORKFLOW_BYTES 上限拉取超大文件。
       if (!declared) {
-        const probe = await safeFetch(args.url, { method: 'GET', headers: { Range: 'bytes=0-0' } }).catch(() => null);
+        const probe = await safeFetch(safeUrl, { method: 'GET', headers: { Range: 'bytes=0-0' } }).catch(() => null);
         const rangeTotal = probe?.headers.get('Content-Range')?.split('/')[1];
         declared = Number(rangeTotal ?? probe?.headers.get('content-length') ?? 0);
       }
@@ -314,7 +317,7 @@ export class WorkflowService {
         );
       }
 
-      const res = await safeFetch(args.url);
+      const res = await safeFetch(safeUrl);
       if (!res.ok || !res.body) {
         throw new AppError(CodeFeatureNotEnabled, `Failed to fetch remote file: HTTP ${res.status}`);
       }

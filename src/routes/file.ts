@@ -24,6 +24,7 @@
  *   DELETE /api/v4/file/source/:id           删除直链
  */
 import { Hono } from 'hono';
+import { assertSafeRemoteUrl } from '../lib/ssrf';
 import type { Context } from 'hono';
 import type { AppBindings, AppRequest } from '../middleware/app';
 import { ctxOf } from '../middleware/app';
@@ -379,6 +380,9 @@ fileRoutes.get('/thumbimg', async (c) => {
   if (!src || !sign) return fail(c, Err.param('missing src or sign'));
   try {
     await ctx.signer.check(src, sign);
+    // src 受 HMAC 保护，但可能指向外部存储的自定义域名；补一道初始 URL
+    // 校验，避免平台把畸形/内网地址签进 URL 后被直接 fetch。
+    assertSafeRemoteUrl(src);
   } catch {
     return fail(c, Err.noPermission());
   }

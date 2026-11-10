@@ -487,11 +487,11 @@ export class UserService {
       try {
         claimed = await this.ctx.users.claimFirstAdmin(normalized);
       } catch (e) {
-        // 栅栏表还没建出来（自举标记没跟上）时，不能让注册整个挂掉。
-        // 退回旧行为：站点为空就够了 —— 有极小概率出两个管理员，可接受；
-        // 总比「新部署第一次注册直接 500」要好。
-        console.error('claimFirstAdmin failed, falling back to siteEmpty', e);
-        claimed = true;
+        // 栅栏表没建出来 / DB 抖动时不能 fail-open：那等于空站点上任何
+        // 注册都能拿管理员组，并发下还能出多个管理员。注册照常成功，
+        // 只是不给管理员，等修好表后由管理员手工提升。
+        console.error('claimFirstAdmin failed, registering as normal user', e);
+        claimed = false;
       }
       if (claimed) {
         await this.ctx.users.updateGroup(user.id, 1);

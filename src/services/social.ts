@@ -237,7 +237,10 @@ export async function handleQqCallback(
   const host = hostOf(ctx);
   const syntheticEmail = `qq_${openid}@${host}`;
 
-  const groupId = (await ctx.users.isEmpty()) ? 1 : ctx.settings.defaultGroupId;
+  // 同 OIDC：首管理员走原子抢占，避免并发回调各自拿到 Admin 组。
+  const groupId = (await ctx.users.claimFirstAdmin(syntheticEmail).catch(() => false))
+    ? 1
+    : ctx.settings.defaultGroupId;
   let user: UserRow;
   try {
     user = await ctx.users.create({

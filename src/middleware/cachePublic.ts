@@ -108,6 +108,14 @@ export function cachePublicAnonStore(): MiddlewareHandler<Bindings> {
     await next();
     const res = c.res;
     if (res.status !== 200 || !isCacheable(c)) return;
+    // 业务错误也是 HTTP 200 + {code:非0}，写进公共缓存会把一次回源故障
+    // 广播给所有匿名访客 60 秒（cacheAuthed 已有同样的 code===0 检查）。
+    try {
+      const j = (await res.clone().json()) as { code?: number };
+      if (j.code !== 0) return;
+    } catch {
+      return;
+    }
     const origin = new URL(c.req.url).origin;
     // 这里刻意 await 而不是丢给 waitUntil：写缓存只多 1~3ms，而 waitUntil 一旦
     // 拿不到绑定好的方法就会静默丢写（缓存命中率恒 0，外部毫无迹象）。

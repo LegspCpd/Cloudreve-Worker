@@ -496,6 +496,7 @@ async function serveAsset(request: Request, env: Env): Promise<Response | null> 
     headers: {
       'content-type': 'text/plain; charset=utf-8',
       'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
     },
   });
 }

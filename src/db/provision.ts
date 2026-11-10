@@ -68,6 +68,9 @@ const MIGRATIONS: ReadonlyArray<readonly [name: string, sqlText: string]> = [
   ['0016_social_bindings.sql', m0016],
   // 0017：文件客户端加密（files.encrypted + entities.enc_meta，edge 自建 Pro 功能）
   ['0017_entity_encryption.sql', m0017],
+  // 0018：通用 KV 表（无 KV 绑定环境的 kvRouter 兜底）。曾漏注册，
+  // 只能靠 kvStore 运行时的 CREATE TABLE IF NOT EXISTS 兜底，自举不会建表。
+  ['0018_key_values.sql', m0018],
 ];
 
 /** KV 标记：值是最后一个已应用的迁移文件名，文件名不变就跳过。 */

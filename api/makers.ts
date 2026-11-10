@@ -71,14 +71,21 @@ export async function onRequest(context: { request: Request; env?: unknown }) {
   // 内存、重建一个标准 Request 再交给 Hono。
   // EdgeOne 单请求 body 上限 6MB（官方文档），全量读入没有 OOM 风险；
   // CF Worker 不走这个入口，不受影响。
+  // EdgeOne 不注入 CF-Connecting-IP，客户端可以自己带这个头，每次换一个
+  // 值就能重置按 IP 的限速桶。统一剥掉，让 clientIp() 回落到 XFF 最右段。
+  const safeHeaders = new Headers(raw.headers);
+  safeHeaders.delete('CF-Connecting-IP');
+
   let req = raw;
   if (raw.method !== 'GET' && raw.method !== 'HEAD') {
     const buf = await raw.arrayBuffer();
     req = new Request(raw.url, {
       method: raw.method,
-      headers: raw.headers,
+      headers: safeHeaders,
       body: buf.byteLength > 0 ? buf : undefined,
     });
+  } else {
+    req = new Request(raw.url, { method: raw.method, headers: safeHeaders });
   }
 
   return app.fetch(req, env as unknown as Env, {

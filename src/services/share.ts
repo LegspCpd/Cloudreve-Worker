@@ -15,11 +15,13 @@ import { logAudit } from './audit';
 import { FileSystemService, MetadataRestoreUri } from './fs';
 import { FileSystemType, URI } from './uri';
 import { isShareExpired, isShareInvalid } from './share-rules';
+import { hitRateLimit, RATE_LIMITS } from '../lib/rateLimit';
 import type { FileRow, GroupRow, ShareRow, UserRow } from '../db/types';
 import { FileType, GroupPermission } from '../lib/boolset';
 import {
   AppError,
   CodeIncorrectPassword,
+  CodeRateLimited,
   CodeInsufficientCredit,
   CodeNoPermissionErr,
   CodeNotFound,
@@ -261,9 +263,24 @@ export class ShareService {
           : false;
     }
 
-    // 密码校验：所有者不受限；其余人必须密码正确
-    const unlocked =
+    // 密码校验：所有者不受限；其余人必须密码正确。
+    // /share/info 是独立的匿名入口，share navigator 的密码限速管不到这里；
+    // 不补就是一个无限速的爆破预言机（unlocked 会直接回显对错）。
+    const passwordOk =
       !share.password || isOwner || (options.password ?? '') === share.password;
+    if (!passwordOk) {
+      const gate = await hitRateLimit(this.ctx.env, {
+        ...RATE_LIMITS.sharePassword,
+        id: `${share.id}:${this.ctx.clientIp}`,
+      });
+      if (!gate.ok) {
+        throw new AppError(
+          CodeRateLimited,
+          `Too many password attempts, retry in ${gate.retryAfter}s`,
+        );
+      }
+    }
+    const unlocked = passwordOk;
 
     if (options.countViews && !isOwner) {
       // 计数和审计是「浏览统计」，没必要让访客等它们：各自一次跨区写库往返，

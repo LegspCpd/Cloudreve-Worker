@@ -17,6 +17,7 @@
 import type { Env } from '../env';
 import { getSql } from '../db';
 import { describeError } from './errors';
+import { clientIpFromHeaders } from './clientIp';
 
 export interface RateLimitOptions {
   /** 限速维度名，例如 `login:email`、`share:pwd` */
@@ -124,11 +125,7 @@ export async function clearRateLimit(
 export function clientIp(c: {
   req: { header: (name: string) => string | undefined };
 }): string {
-  const cf = c.req.header('CF-Connecting-IP');
-  if (cf) return cf.trim();
-  const xff = c.req.header('X-Forwarded-For');
-  if (xff) return (xff.split(',')[0] ?? '').trim();
-  return 'unknown';
+  return clientIpFromHeaders((name) => c.req.header(name));
 }
 
 /** 常用策略集中放这里，避免各处凭感觉写数字。 */

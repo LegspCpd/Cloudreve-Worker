@@ -97,7 +97,11 @@ export function paramError(c: Context, msg = 'Invalid parameters.'): Response {
 }
 
 function isProduction(c: Context): boolean {
-  return (c.env as { ENVIRONMENT?: string } | undefined)?.ENVIRONMENT === 'production';
+  // 默认按生产处理：只有显式声明 development / dev 才把内部错误原文回显。
+  // 原来「非 production 就回显」，而三个平台的配置都没有 ENVIRONMENT，
+  // 等于默认开着调试回显（DB 错误 detail、驱动原文、表名）。
+  const mode = (c.env as { ENVIRONMENT?: string } | undefined)?.ENVIRONMENT;
+  return mode !== 'development' && mode !== 'dev';
 }
 
 function jsonResponse(c: Context, body: Envelope, status: 200 | 404 = 200): Response {

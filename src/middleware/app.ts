@@ -24,6 +24,7 @@ import { UserRepo } from '../db/repo';
 import { resolveDb, type DbHandle } from '../db/shard';
 import { kvFor } from '../lib/kvRouter';
 import { getCachedUser, invalidateUser, rememberEnv } from '../services/userCache';
+import { clientIpFromHeaders } from '../lib/clientIp';
 import { rememberPolicyEnv } from '../services/policyCache';
 import { stageInit, stagesOf } from '../lib/timings';
 
@@ -83,7 +84,9 @@ async function resolveUser(
   // 是免费档 Neon 最烧不起的开销（180~550ms/次，并发高了还回 5xx）。
   // L1 内存命中 0 往返，L2(KV) 命中 1 次 KV get —— 见 services/userCache.ts。
   const user = await getCachedUser(env, db.sql, uid);
-  if (!user) return undefined;
+  // 封禁 / 停用必须让已签发的 access token 立即失效；原来只在登录和
+  // refresh 时检查 status，会话校验路径完全没判，封禁后旧 token 还能用满 TTL。
+  if (!user || user.status !== 'active') return undefined;
 
   // 把 claims 一并带出去 —— 调用方需要 client_id / scopes，
   // 原实现为此**又验了一遍同一个 JWT**（HMAC 计算白烧一次 CPU）。
@@ -181,10 +184,8 @@ export function appContext(): MiddlewareHandler<AppBindings> {
     const appCtx = new AppContext(env, settings, codec, jwt, user, scopes, db);
     stageInit(appCtx);
     // 客户端 IP 只有这一层拿得到（服务层没有 Request）。分享密码的失败限速要用。
-    appCtx.clientIp =
-      c.req.header('CF-Connecting-IP')?.trim() ||
-      (c.req.header('X-Forwarded-For') ?? '').split(',')[0]?.trim() ||
-      'unknown';
+    // 与限速桶共用同一份实现，别再复制一份（复制就会漂移）。
+    appCtx.clientIp = clientIpFromHeaders((name) => c.req.header(name));
     // 后台任务挂钩：把「发信」这类不能阻塞响应、又不该丢的工作挂到
     // Workers 的 waitUntil 上（对应原版的常驻队列发信）。
     appCtx.setBackgroundHooks({

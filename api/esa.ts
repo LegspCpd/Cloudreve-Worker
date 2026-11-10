@@ -117,6 +117,11 @@ export default {
       passThroughOnException: () => undefined,
     };
 
-    return app.fetch(request, env, ctx as unknown as ExecutionContext);
+    // 同 EdgeOne：ESA 不注入 CF-Connecting-IP，客户端伪造该头即可重置
+    // 按 IP 的限速桶。剥掉后再交给 Hono。
+    const safeHeaders = new Headers(request.headers);
+    safeHeaders.delete('CF-Connecting-IP');
+    const safeRequest = new Request(request, { headers: safeHeaders });
+    return app.fetch(safeRequest, env, ctx as unknown as ExecutionContext);
   },
 };

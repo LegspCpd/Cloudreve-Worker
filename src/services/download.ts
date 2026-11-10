@@ -123,7 +123,9 @@ export class DownloadService {
     const urls: EntityUrl[] = [];
     const now = Math.floor(Date.now() / 1000);
     const ttl = options.ttlSeconds ?? this.ctx.settings.getInt('entity_url_default_ttl', 3600);
-    const expiresAt = ttl > 0 ? now + ttl : 0;
+    // 永不过期的签名 URL 无法撤销（属主删分享/封禁都管不到已签发的地址）。
+    // TTL 配成 0 时兜到默认 1 小时，不允许签发 expires=0 的凭证。
+    const expiresAt = now + (ttl > 0 ? ttl : 3600);
 
     for (const uri of uris) {
       const file = await this.fs.mustResolve(uri);
@@ -213,6 +215,12 @@ export class DownloadService {
       if (id === null) throw new AppError(CodeEntityNotExist, 'Entity not found');
       const entity = await this.ctx.entities.byId(id);
       if (!entity) throw new AppError(CodeEntityNotExist, 'Entity not found');
+      // entity hashid 是公开下发的（文件列表、分享页、WOPI 头），不能凭一个
+      // id 就换全库任意实体内容。必须确认它属于本次已鉴权的文件（含历史版本）。
+      const owned = await this.ctx.entities.listByFile(file.id);
+      if (!owned.some((e) => e.id === entity.id)) {
+        throw new AppError(CodeEntityNotExist, 'Entity not found');
+      }
       return entity;
     }
     if (!file.primary_entity) {
@@ -423,7 +431,8 @@ export class DownloadService {
 
     const w = this.ctx.settings.getInt('thumb_width', 512);
     const h = this.ctx.settings.getInt('thumb_height', 512);
-    const sign = await this.ctx.signer.sign(src);
+    // 缩略图 URL 原来漏传 expires，sign() 默认 0 = 永久可重放。
+    const sign = await this.ctx.signer.sign(src, Math.floor(Date.now() / 1000) + 3600);
     const base = this.ctx.settings.siteUrl.replace(/\/+$/, '');
     const url = `${base}/api/v4/file/thumbimg?src=${encodeURIComponent(src)}&w=${w}&h=${h}&sign=${encodeURIComponent(sign)}`;
     return { url, expires: null };
@@ -512,7 +521,9 @@ export class DownloadService {
     }
 
     // 需要代理时返回本站签名地址（带上属主组限速）
-    const expiresAt = Math.floor(Date.now() / 1000) + this.ctx.settings.getInt('entity_url_default_ttl', 3600);
+    // TTL 配 0 会签出永不过期的地址（check 现在会拒绝，下载立刻坏）。
+    const ttl = Math.max(60, this.ctx.settings.getInt('entity_url_default_ttl', 3600));
+    const expiresAt = Math.floor(Date.now() / 1000) + ttl;
     return this.buildProxyUrl(entity.id, file.name, expiresAt, true, await this.speedLimitFor(file));
   }
 

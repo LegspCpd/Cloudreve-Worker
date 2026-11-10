@@ -1,18 +1,4 @@
-# ---------------------------------------------------------------------------
-# 前端产物 + 构建检查 + 双平台部署
-#
-#   1. build-check：每次 push / PR 都跑 —— 类型检查 + 全部离线测试 + wrangler
-#      dry-run 构建 + EdgeOne 云函数产物一致性门禁，另加一步「本仓库还没有
-#      对应预构建包就发一个」（见下）。
-#   2. deploy-check：只有配了 CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
-#      两个 secrets 才真的部署 CF Worker（现在已配，每次 push 自动部署）。
-#   3. edgeone-build：EdgeOne 完整构建 + 产物校验 + 上传 artifact，不要凭据。
-#   4. edgeone-deploy：配了 EDGEONE_API_TOKEN / EDGEONE_CN_API_TOKEN 才部署
-#      EdgeOne Makers（国际站 / 中国站），否则只打 notice 跳过。
-#      ⚠️ 若 EdgeOne 项目仍绑着 Git 集成，push 会两套流程各部署一遍 ——
-#      想以 Actions 为准就先关掉控制台的 Git 集成。
-#   5. esa-build：阿里云 ESA 完整构建 + 4MB 代码包上限校验 + 产物 artifact，
-#      不要凭据；部署走 ESA 控制台的 GitHub 集成（esa.jsonc）。
+# 构建检查 + 三平台部署（CF / EdgeOne / ESA）
 #
 # 为什么要在 CI 里发前端包：CF 的构建机拿不到「另一条流水线的缓存」，
 # 它只能按包名去 Release 下 —— 包名 = commit + 补丁内容哈希，而改过
@@ -30,7 +16,26 @@
 #   npm run test:copy:setup && npm run test:copy    # COPY 全量同步真机往返
 #   npm run test:multidb                            # 上面全部 + 路由测试
 # ---------------------------------------------------------------------------
-name: Cloudflare Workers Check
+name: Build & Deploy
+
+# 各 job 干什么，看 job 名就够了：
+#   Build Check            纯构建检查（类型检查 + 离线测试 + dry-run + 产物一致性）
+#   Deploy to Cloudflare   真的把 Worker 发到 CF（配了 CF secrets 才跑）
+#   EdgeOne Build Check    构建并校验 EdgeOne 产物，上传 artifact
+#   ESA Build Check        构建并校验 ESA 产物，上传 artifact
+#   Deploy to EdgeOne      用官方 CLI 把上一步的产物发到 EdgeOne Makers
+#
+# EdgeOne 的国内站与国际站**构建产物完全相同**，只是部署目标账号不同，
+# 所以只有一个构建 job、一次部署；不按站点拆配置。
+#
+# 凭据（都是可选的，没配就跳过对应部署）：
+#   CF：       CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
+#   EdgeOne：  EDGEONE_API_TOKEN —— 必须是 EdgeOne Makers 控制台
+#              「API Token」页签创建的 Token。⚠️ 腾讯云 CAM 的
+#              SecretId / SecretKey 不是这个东西，填进去 CLI 会报
+#              「Invalid EDGEONE_PAGES_API_TOKEN」。
+#              EDGEONE_SECRET_ID 当前不参与部署，仅预留。
+#   ESA：      部署走 ESA 控制台的 GitHub 集成（esa.jsonc），CI 不部署。
 
 on:
   push:
@@ -44,7 +49,7 @@ permissions:
 
 jobs:
   build-check:
-    name: 构建 + dry-run 检查
+    name: Build Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -162,10 +167,9 @@ jobs:
           gh release upload frontend-assets "$ASSET" --clobber
           echo "已发布 $ASSET"
 
-  # 仅当配了 CF 凭据时才有意义；当前没配（线上部署在 CF 面板的 Workers Builds）。
-  # 保留它是因为「把部署收回 GitHub」只需要加两个 secret + 关掉 CF 的 Git 集成。
+  # 真的把 Worker 发布到 Cloudflare；没配 CF secrets 时部署步骤跳过。
   deploy-check:
-    name: 真实部署检查（未配凭据时跳过）
+    name: Deploy to Cloudflare
     runs-on: ubuntu-latest
     needs: build-check
     if: github.event_name != 'pull_request'
@@ -235,28 +239,14 @@ jobs:
         run: node scripts/deploy.mjs
 
   # -------------------------------------------------------------------------
-  # EdgeOne Makers（Pages）：构建校验 + 实际部署
-  #
-  #   edgeone-build  不依赖任何凭据，push / PR 都跑：完整构建（前端 + Node
-  #                  云函数）、组装自包含目录、校验平台配置、上传 artifact。
-  #   edgeone-deploy 配了 EDGEONE_API_TOKEN（国际站）或 EDGEONE_CN_API_TOKEN
-  #                  （中国站）才跑，用官方 CLI 部署上一步的产物。
-  #                  两个 token 都配就依次部署两个站（--site global / china）。
-  #
-  # 可选 Secrets / Variables：
-  #   EDGEONE_API_TOKEN       国际站 API Token
-  #   EDGEONE_CN_API_TOKEN    中国站 API Token（可选）
-  #   EDGEONE_PROJECT         国际站项目名，默认 cloudreve-worker-edgeone
-  #   EDGEONE_CN_PROJECT      中国站项目名，默认 cloudreve-worker-edgeone-cn
-  #   EDGEONE_ENV             部署环境 production / preview，默认 production
-  #
-  # ⚠️ 项目名必须填已存在的 Makers 项目；CLI 找不到同名项目会自动新建，
-  #    那不会带自定义域名和环境变量。若现有项目是「Git 集成」类型，
-  #    用 CLI 部署前需在控制台改成「直接上传」类型，或关掉 Git 集成，
-  #    否则每次 push 会两套流程各部署一遍。
+  # EdgeOne Makers：构建校验 + 一次部署。
+  # 国内站与国际站的构建产物完全相同，只是目标账号不同，所以不按站点拆配置。
+  # 项目名用 vars.EDGEONE_PROJECT 指定（默认 cloudreve-worker-edgeone）。
+  # ⚠️ 项目必须是「直接上传」类型；若仍绑着 Git 集成，push 会部署两遍。
+  # ⚠️ 项目名要填已有项目，CLI 找不到同名会自动新建（不带自定义域名和环境变量）。
   # -------------------------------------------------------------------------
   edgeone-build:
-    name: EdgeOne 构建 + 产物校验
+    name: EdgeOne Build Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -296,48 +286,42 @@ jobs:
           retention-days: 7
 
   edgeone-deploy:
-    name: EdgeOne 实际部署（未配 token 时跳过）
+    name: Deploy to EdgeOne
     runs-on: ubuntu-latest
     needs: [build-check, edgeone-build]
     if: github.event_name != 'pull_request'
     env:
       EDGEONE_API_TOKEN: ${{ secrets.EDGEONE_API_TOKEN }}
-      EDGEONE_CN_API_TOKEN: ${{ secrets.EDGEONE_CN_API_TOKEN }}
       EDGEONE_PROJECT: ${{ vars.EDGEONE_PROJECT }}
-      EDGEONE_CN_PROJECT: ${{ vars.EDGEONE_CN_PROJECT }}
       EDGEONE_ENV: ${{ vars.EDGEONE_ENV }}
     steps:
       - name: 检查部署凭据
         id: creds
         run: |
-          if [ -n "$EDGEONE_API_TOKEN" ]; then echo "global=true" >> "$GITHUB_OUTPUT"; fi
-          if [ -n "$EDGEONE_CN_API_TOKEN" ]; then echo "china=true" >> "$GITHUB_OUTPUT"; fi
-          if [ -z "$EDGEONE_API_TOKEN" ] && [ -z "$EDGEONE_CN_API_TOKEN" ]; then
-            echo "::notice::未配置 EDGEONE_API_TOKEN / EDGEONE_CN_API_TOKEN secrets，跳过 EdgeOne 部署"
+          if [ -n "$EDGEONE_API_TOKEN" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置 EDGEONE_API_TOKEN，跳过 EdgeOne 部署"
           fi
 
       - name: 下载构建产物
-        if: steps.creds.outputs.global == 'true' || steps.creds.outputs.china == 'true'
+        if: steps.creds.outputs.ok == 'true'
         uses: actions/download-artifact@v4
         with:
           name: edgeone-publish
           path: edgeone-publish
 
-      - name: 部署国际站（global）
-        if: steps.creds.outputs.global == 'true'
+      - name: 部署到 EdgeOne Makers
+        if: steps.creds.outputs.ok == 'true'
         run: |
           PROJECT="${EDGEONE_PROJECT:-cloudreve-worker-edgeone}"
           npx --yes edgeone makers deploy ./edgeone-publish \
             -n "$PROJECT" -t "$EDGEONE_API_TOKEN" \
-            --site global -e "${EDGEONE_ENV:-production}"
-
-      - name: 部署中国站（china）
-        if: steps.creds.outputs.china == 'true'
-        run: |
-          PROJECT="${EDGEONE_CN_PROJECT:-cloudreve-worker-edgeone-cn}"
-          npx --yes edgeone makers deploy ./edgeone-publish \
-            -n "$PROJECT" -t "$EDGEONE_CN_API_TOKEN" \
-            --site china -e "${EDGEONE_ENV:-production}"
+            -e "${EDGEONE_ENV:-production}" -a global || {
+            echo "::error::EdgeOne 部署失败。EDGEONE_API_TOKEN 必须是 Makers 控制台「API Token」页签创建的 Token，不是腾讯云 CAM 的 SecretId / SecretKey。"
+            exit 1
+          }
 
   # -------------------------------------------------------------------------
   # 阿里云 ESA（函数和 Pages）：构建校验
@@ -352,7 +336,7 @@ jobs:
   #   esa-cli login/deploy。这里不塞没实测过的非交互部署命令。
   # -------------------------------------------------------------------------
   esa-build:
-    name: ESA 构建 + 产物校验
+    name: ESA Build Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

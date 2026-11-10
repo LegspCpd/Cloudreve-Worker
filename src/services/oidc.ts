@@ -228,7 +228,11 @@ export async function handleCallback(
   // 邮箱策略（与密码注册一致）
   assertOidcEmailPolicy(ctx, email);
 
-  const groupId = (await ctx.users.isEmpty()) ? 1 : ctx.settings.defaultGroupId;
+  // 首管理员名额必须走原子栅栏；只判 isEmpty() 时并发回调会同时看到空站点，
+  // 结果多个第三方账号直接进 Admin 组（密码注册路径早就修过，这里漏了）。
+  const groupId = (await ctx.users.claimFirstAdmin(email).catch(() => false))
+    ? 1
+    : ctx.settings.defaultGroupId;
   let user: UserRow;
   try {
     user = await ctx.users.create({
