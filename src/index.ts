@@ -393,6 +393,9 @@ app.get('/f/:id/:name', async (c) => {
   const download = new DownloadService(ctx, service);
   try {
     const target = await download.visitDirectLink(c.req.param('id'));
+    // 上游 PR #3524：禁止客户端缓存重定向。否则属主权限被撤销后，访问过
+    // 的浏览器仍可凭缓存的 302 跳到旧签名地址，绕过服务端的重新校验。
+    c.header('Cache-Control', 'no-store');
     return c.redirect(target, 302);
   } catch (e) {
     return fail(c, e, 404);
