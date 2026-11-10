@@ -46,7 +46,7 @@ ${t.stack??""}`}try{return JSON.stringify(t)??String(t)}catch{return String(t)}}
       `},async delete(e){await Wa(t),await t`DELETE FROM key_values WHERE key = ${e}`},async list(e={}){await Wa(t);let n=Math.min(1e3,Math.max(1,e.limit??1e3)),r=e.cursor??"",i=e.prefix??"",s=await t`
         SELECT key, metadata, expire_at FROM key_values
         WHERE key > ${r}
-          ${i?t`AND key LIKE ${i+"%"}`:t``}
+          AND (${i} = '' OR key LIKE ${i+"%"})
           AND (expire_at IS NULL OR expire_at > now())
         ORDER BY key ASC
         LIMIT ${n+1}
@@ -1894,7 +1894,7 @@ API \u5165\u53E3\uFF1A/api/v4/site/ping
 </body>
   
 </html>
-`;Ge();var tA=["/api/","/dav","/s/","/f/","/manifest.json"],nA=/\.[a-zA-Z0-9]+$/;async function rA(t){let e={...globalThis.process?.env};sA(e);let n=t.request,r=new URL(n.url),i=n.headers.get("accept")??"",s=tA.some(a=>r.pathname===a.replace(/\/$/,"")||r.pathname.startsWith(a));return(n.method==="GET"||n.method==="HEAD")&&i.includes("text/html")&&!s&&!nA.test(r.pathname)?new Response(gb,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-cache"}}):mb.fetch(n,e,{waitUntil:a=>a,passThroughOnException:()=>{}})}var wq=rA,yb=0,iA=3600*1e3;async function sA(t){let e=Date.now();if(!(e-yb<6e4)){yb=e;try{let n=K(t,"flag"),r=Number(await n.get("cron:last-run")??0);if(e-r<iA)return;await n.put("cron:last-run",String(e),{expirationTtl:86400}),is(t)}catch{}}}export{wq as default,rA as onRequest};
+`;Ge();var tA=["/api/","/dav","/s/","/f/","/manifest.json"],nA=/\.[a-zA-Z0-9]+$/;async function rA(t){let e={...globalThis.process?.env};sA(e);let n=t.request,r=new URL(n.url),i=n.headers.get("accept")??"",s=tA.some(c=>r.pathname===c.replace(/\/$/,"")||r.pathname.startsWith(c));if((n.method==="GET"||n.method==="HEAD")&&i.includes("text/html")&&!s&&!nA.test(r.pathname))return new Response(gb,{headers:{"content-type":"text/html; charset=utf-8","cache-control":"no-cache"}});let a=n;if(n.method!=="GET"&&n.method!=="HEAD"){let c=await n.arrayBuffer();a=new Request(n.url,{method:n.method,headers:n.headers,body:c.byteLength>0?c:void 0})}return mb.fetch(a,e,{waitUntil:c=>c,passThroughOnException:()=>{}})}var wq=rA,yb=0,iA=3600*1e3;async function sA(t){let e=Date.now();if(!(e-yb<6e4)){yb=e;try{let n=K(t,"flag"),r=Number(await n.get("cron:last-run")??0);if(e-r<iA)return;await n.put("cron:last-run",String(e),{expirationTtl:86400}),is(t)}catch{}}}export{wq as default,rA as onRequest};
 /*! Bundled license information:
 
 @neondatabase/serverless/index.mjs:
