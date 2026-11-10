@@ -26,6 +26,37 @@
 import app from '../src/index';
 import type { Env } from '../src/env';
 
+// ---------------------------------------------------------------------------
+// ESA 运行时缺失全局的补齐（模块顶层，bundle 加载时最先执行）
+//
+// 官方 Runtime API 只列了 Web / 部分 Node / ESA 专属 API：
+//   - 没有 `performance`，但我们的计时中间件、列表分段计时、fs 都在用
+//     performance.now() —— 缺了每个请求直接 50005。
+//   - Console 只支持 console.log / console.alert，代码里 32 处
+//     console.error / 2 处 console.warn 需要映射到 log，否则异常路径
+//     记录日志时反而抛 TypeError。
+// 这些 polyfill 只在 ESA 入口注入，CF / EdgeOne 走各自的入口不受影响。
+// ---------------------------------------------------------------------------
+{
+  const g = globalThis as unknown as {
+    performance?: { now(): number; timeOrigin?: number };
+    console: Record<string, (...args: unknown[]) => void>;
+  };
+  if (!g.performance) {
+    const shim = { now: () => Date.now(), timeOrigin: Date.now() };
+    try {
+      g.performance = shim;
+    } catch {
+      Object.defineProperty(g, 'performance', { value: shim, configurable: true });
+    }
+  }
+  for (const level of ['error', 'warn', 'info', 'debug']) {
+    if (typeof g.console?.[level] !== 'function') {
+      g.console[level] = (...args: unknown[]) => g.console.log(`[${level}]`, ...args);
+    }
+  }
+}
+
 interface EsaContext {
   waitUntil?: (promise: Promise<unknown>) => void;
 }
