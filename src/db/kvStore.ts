@@ -117,7 +117,7 @@ export function createDbKv(sql: Sql): KvLike {
       const rows = (await sql`
         SELECT key, metadata, expire_at FROM key_values
         WHERE key > ${cursor}
-          ${prefix ? sql`AND key LIKE ${prefix + '%'}` : sql``}
+          AND (${prefix} = '' OR key LIKE ${prefix + '%'})
           AND (expire_at IS NULL OR expire_at > now())
         ORDER BY key ASC
         LIMIT ${limit + 1}

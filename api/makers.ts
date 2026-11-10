@@ -41,9 +41,9 @@ export async function onRequest(context: { request: Request; env?: unknown }) {
   } as unknown as Record<string, unknown>;
   void maybeRunCron(env);
 
-  const req = context.request;
-  const url = new URL(req.url);
-  const accept = req.headers.get('accept') ?? '';
+  const raw = context.request;
+  const url = new URL(raw.url);
+  const accept = raw.headers.get('accept') ?? '';
   const isBackendPath = BACKEND_PREFIXES.some(
     (p) => url.pathname === p.replace(/\/$/, '') || url.pathname.startsWith(p),
   );
@@ -51,7 +51,7 @@ export async function onRequest(context: { request: Request; env?: unknown }) {
   // SPA 壳兜底：前端路由（/home、/@manage 等平台静态不存在的路径）由这里
   // 返回内联的 index.html。浏览器导航请求（Accept 含 text/html）才会命中。
   const isHtmlNav =
-    (req.method === 'GET' || req.method === 'HEAD') &&
+    (raw.method === 'GET' || raw.method === 'HEAD') &&
     accept.includes('text/html') &&
     !isBackendPath &&
     !ASSET_PATTERN.test(url.pathname);
@@ -62,6 +62,22 @@ export async function onRequest(context: { request: Request; env?: unknown }) {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-cache',
       },
+    });
+  }
+
+  // ⚠️ EdgeOne 云函数的 Request body 流在连接复用时会偶发读不到：
+  // 实测「每个 POST 前插一个 GET」→ POST 交替报 uri/body 缺失；连续 POST
+  // 只有第一次失败。平台传进来的 Request 对象不可靠，这里把 body 完整读进
+  // 内存、重建一个标准 Request 再交给 Hono。
+  // EdgeOne 单请求 body 上限 6MB（官方文档），全量读入没有 OOM 风险；
+  // CF Worker 不走这个入口，不受影响。
+  let req = raw;
+  if (raw.method !== 'GET' && raw.method !== 'HEAD') {
+    const buf = await raw.arrayBuffer();
+    req = new Request(raw.url, {
+      method: raw.method,
+      headers: raw.headers,
+      body: buf.byteLength > 0 ? buf : undefined,
     });
   }
 
