@@ -58,7 +58,7 @@ export default {
         hasJwtSecret: !!merged.JWT_SECRET,
         hasSiteUrl: !!merged.SITE_URL,
         envFromFetchArg: Object.keys(envVars ?? {}).length > 0,
-        skipBootstrap: merged.ESA_SKIP_BOOTSTRAP === '1',
+        skipBootstrap: (merged.ESA_SKIP_BOOTSTRAP ?? '1') === '1',
       });
     }
 
@@ -67,6 +67,13 @@ export default {
       // ESA 没有 TCP socket：非 Neon 的 PostgreSQL 连不上，显式钉死驱动，
       // 免得 resolveDriverKind 按域名落到 postgres.js 分支（那里只有 stub）。
       DB_PROVIDER: 'neon',
+      // ESA 单次执行最多 4 个 fetch 子请求，自举（17 个迁移 + 播种）必然
+      // 超限并让每个请求 503。库一律由外部预初始化（migrate.mjs +
+      // seed.mjs），这里默认跳过整个自举。显式配 ESA_SKIP_BOOTSTRAP=0 可
+      // 用于调试，但正常部署不要改。
+      ESA_SKIP_BOOTSTRAP: merged.ESA_SKIP_BOOTSTRAP ?? '1',
+      // 控制台没配 SITE_URL 时跟随实际请求的来源，避免分享短链/直链拼错
+      SITE_URL: merged.SITE_URL || new URL(request.url).origin,
     } as unknown as Env;
 
     const ctx = {
