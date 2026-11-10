@@ -470,12 +470,44 @@ app.onError((err, c) => {
  * 这里再包一层 try/catch 并归一化错误形态，保证任何抛出物都变成
  * 标准 JSON 信封（HTTP 200 + code），彻底消除 520。
  */
+/**
+ * `/assets/*` 的缺失资源必须回真 404，不能被 SPA fallback 吞成 200 HTML。
+ *
+ * `not_found_handling = "single-page-application"` 会把**所有**未命中路径
+ * （包括 .js/.css）回成 `/index.html` + 200，而 `frontend/_headers` 给
+ * `/assets/*` 盖了一年 immutable —— 老页面引用已删除的 chunk 时会把 HTML
+ * 当 JS 执行（白屏），重载也拿不到新资源。前端的 `vite:preloadError` 自愈
+ * 是兜底，但根上就不该给它 HTML。
+ *
+ * 配合 `run_worker_first` 里的 `/assets/*`：命中的资源原样返回；平台回的是
+ * HTML 就说明没命中，改成 404 + no-store。SPA 深链不在这个前缀下，仍由
+ * 平台的 fallback 处理，行为不变。无 ASSETS 绑定（EdgeOne / ESA / FRONTEND_URL
+ * 反代）时直接返回 null，走原来的路径。
+ */
+async function serveAsset(request: Request, env: Env): Promise<Response | null> {
+  if (!env.ASSETS) return null;
+  const { pathname } = new URL(request.url);
+  if (!pathname.startsWith('/assets/')) return null;
+  if (request.method !== 'GET' && request.method !== 'HEAD') return null;
+  const res = await env.ASSETS.fetch(request);
+  if (!res.headers.get('content-type')?.includes('text/html')) return res;
+  return new Response('Not Found', {
+    status: 404,
+    headers: {
+      'content-type': 'text/plain; charset=utf-8',
+      'cache-control': 'no-store',
+    },
+  });
+}
+
 async function fetchWithFallback(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
   try {
+    const asset = await serveAsset(request, env);
+    if (asset) return asset;
     return await app.fetch(request, env, ctx);
   } catch (e) {
     // 连 Correlation ID 都拿不到时也要能回一个合规响应

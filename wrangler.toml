@@ -146,7 +146,7 @@ html_handling = "none"
 # 匹配不上，会落到静态资源处理器 —— 而它只支持 GET/HEAD，OPTIONS/PROPFIND 一律
 # 405。MT管理器 / Alist / OpenList / 官方桌面端都会先探不带斜杠的地址，于是
 # 「连接失败」。列了精确路径后由 Worker 自己处理（内部再 301 到 /dav/）。
-run_worker_first = ["/api/*", "/s/*", "/f/*", "/dav", "/dav/*", "/manifest.json"]
+run_worker_first = ["/api/*", "/s/*", "/f/*", "/dav", "/dav/*", "/manifest.json", "/assets/*"]
 
 # ---------------------------------------------------------------------------
 # 定时任务（每小时整点）。需要同步在 src/index.ts 的 scheduled() 里处理，已实现。
