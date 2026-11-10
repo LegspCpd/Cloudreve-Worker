@@ -675,6 +675,11 @@ export class UploadService {
     }
 
     const policy = await this.ctx.resolvePolicy(file.storage_policy_files);
+    // 覆盖写是另一条上传入口（WebDAV PUT、在线编辑），必须过与 createSession
+    // 相同的策略约束。原来只有新建会话校验，这里能上传策略禁止的扩展名、
+    // 超过 max_size 的文件。WebDAV 因 ignoreMaxEdit 跳过的是「在线编辑体积
+    // 上限」，不是策略的 max_size —— 后者由这一行兜住。
+    this.assertPolicyConstraints(policy, file.name, length);
     const driver = this.ctx.driverFor(policy);
 
     // 原版 `Update` 走 `ModeOverwrite`：建**新**实体，旧实体留作历史版本。

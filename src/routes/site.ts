@@ -12,7 +12,8 @@
 import { Hono } from 'hono';
 import type { AppBindings } from '../middleware/app';
 import { ctxOf } from '../middleware/app';
-import { ok } from '../lib/response';
+import { ok, fail } from '../lib/response';
+import { Err } from '../lib/errors';
 import { randomString } from '../lib/crypto';
 import { UserService } from '../services/user';
 import { publicOidcInfo } from '../services/oidc';
@@ -69,6 +70,9 @@ siteRoutes.get('/ping', (c) => {
  * 只暴露绑定**名字**，不含 ID、不含任何业务数据，无鉴权风险。
  */
 siteRoutes.get('/kv-status', (c) => {
+  // 会回显绑定名、角色映射与 namespace 分布，别给匿名访客做侦察。
+  const ctx = ctxOf(c);
+  if (!ctx.user || !ctx.isAdmin) return fail(c, Err.adminRequired());
   c.header('Cache-Control', 'no-cache');
   const env = c.env as unknown as Record<string, unknown>;
   const present = listKvBindings(c.env);
@@ -167,6 +171,9 @@ function listKvBindings(env: unknown): string[] {
  *   （或走 deploy.mjs 的 `wrangler secret put`，它写的也是运行时机密）。
  */
 siteRoutes.get('/db-status', async (c) => {
+  // 回显主备库数量、failover、分域状态，探测失败时还可能带驱动错误原文。
+  const ctx = ctxOf(c);
+  if (!ctx.user || !ctx.isAdmin) return fail(c, Err.adminRequired());
   c.header('Cache-Control', 'no-cache');
   const env = c.env as unknown as Record<string, string | undefined>;
   const names = ['DATABASE_URL', 'DATABASE_URL_2', 'DATABASE_URL_3', 'DATABASE_URL_4', 'DATABASE_URL_5'] as const;
@@ -284,6 +291,9 @@ function safeHost(url: string): string {
  * 一个端点明确告诉你「到底有没有在生效」。
  */
 siteRoutes.get('/archive-status', async (c) => {
+  // 未完成 WAL 操作的 ref / error 属于内部状态。
+  const ctx = ctxOf(c);
+  if (!ctx.user || !ctx.isAdmin) return fail(c, Err.adminRequired());
   c.header('Cache-Control', 'no-cache');
   const env = c.env;
   const enabled = archiveEnabled(env);

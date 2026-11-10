@@ -262,9 +262,12 @@ app.use('*', securityHeaders());
 // 的 KV 读与冷启动。必须在 appContext 之前注册，否则缓存命中也要先跑一通中间件。
 app.use('*', cachePublicAnon());
 // 登录态只读接口（/me、GET /file 列目录）的边缘缓存：命中即短路，跳过
-// appContext 的 KV 读与数据库往返。必须在 appContext 之前注册。
-app.use('*', cacheAuthed());
+// appContext 先跑：命中登录态缓存也必须先验 JWT、查用户状态。
+// 原来 cacheAuthed 注册在它之前且命中即短路，封禁 / 停用 / 登出后的旧
+// token 在 30~60s TTL 内仍能读到缓存里的个人数据。代价是命中请求多走一次
+// appContext，但 loadSettings 与 userCache 都有 L1/KV 缓存，不是 DB 往返。
 app.use('*', appContext());
+app.use('*', cacheAuthed());
 // 社交媒体爬虫看分享链接时回 OG 预览页（非爬虫原样放行）。
 // 必须放在 appContext 之后 —— 它要读站点设置和分享信息。
 app.use('*', sharePreview());
