@@ -82,6 +82,10 @@ export interface Env {
    *     非 /api 的请求会原样反代过去。
    */
   FRONTEND_URL?: string;
+  /** 文件加密的独立主密钥（不入库）。不配时由站点 secret_key 派生。 */
+  ENCRYPTION_MASTER_KEY?: string;
+  /** 填 1 才允许把域名型远程下载 URL 分派给从节点（有 DNS rebinding 风险）。 */
+  REMOTE_DOWNLOAD_ALLOW_SLAVE_DOMAIN?: string;
   ENVIRONMENT?: string;
   /**
    * 允许跨域访问 API 的源，逗号分隔（如 `https://a.com,https://b.com`）。

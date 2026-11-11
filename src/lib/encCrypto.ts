@@ -13,6 +13,79 @@
 import { EncryptionCipher, type EncryptMetadata } from '../db/types';
 import { base64ToBytes, bytesToBase64 } from './crypto';
 
+/**
+ * 站点级「文件密钥主密钥」。
+ *
+ * 优先读部署环境变量 ENCRYPTION_MASTER_KEY（不入库）。没配时回落到站点
+ * secret_key 派生 —— 至少不再把每文件 AES 密钥明文摊在库里，但要真正
+ * 做到「库泄露 ≠ 文件泄露」必须配这个独立变量。
+ *
+ * ⚠️ 主密钥必须长期固定：换 ENCRYPTION_MASTER_KEY（或依赖的 secret_key）
+ * 会让已经 wrap 过的历史文件解不开。轮换前得先用旧密钥批量重加密。
+ */
+export async function deriveFileMasterKey(
+  env: { ENCRYPTION_MASTER_KEY?: string },
+  fallbackSecret: string,
+): Promise<CryptoKey> {
+  const master = env.ENCRYPTION_MASTER_KEY?.trim() || fallbackSecret;
+  if (!master) throw new Error('Encryption master key is unavailable');
+  const ikm = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(master), 'HKDF', false, ['deriveKey'],
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: new TextEncoder().encode('cloudreve-edge/file-key/v1'),
+      info: new TextEncoder().encode('aes-256-gcm-wrap'),
+    },
+    ikm,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+/** 把明文文件密钥信封加密成可落库的形态。 */
+export async function wrapEncryptMetadata(
+  meta: EncryptMetadata,
+  masterKey: CryptoKey,
+): Promise<EncryptMetadata> {
+  if (meta.key_wrapped) return meta;
+  if (!meta.key_plain_text) throw new Error('Missing file encryption key');
+  const wrapIv = crypto.getRandomValues(new Uint8Array(12));
+  const wrapped = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: wrapIv }, masterKey, base64ToBytes(meta.key_plain_text),
+  );
+  return {
+    algorithm: meta.algorithm,
+    iv: meta.iv,
+    key_wrapped: bytesToBase64(new Uint8Array(wrapped)),
+    wrap_iv: bytesToBase64(wrapIv),
+    wrap_version: 1,
+  };
+}
+
+/** 解开信封，还原成含 key_plain_text 的元数据（仅内存中使用）。 */
+export async function unwrapEncryptMetadata(
+  meta: EncryptMetadata,
+  masterKey: CryptoKey,
+): Promise<EncryptMetadata> {
+  if (!meta.key_wrapped || !meta.wrap_iv) {
+    throw new Error('Corrupted wrapped encryption metadata');
+  }
+  const plain = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToBytes(meta.wrap_iv) },
+    masterKey,
+    base64ToBytes(meta.key_wrapped),
+  );
+  return {
+    algorithm: meta.algorithm,
+    iv: meta.iv,
+    key_plain_text: bytesToBase64(new Uint8Array(plain)),
+  };
+}
+
 /** AES-CTR 计数器按块递增（16 字节大端）。 */
 export function incrementCounter(
   counter: Uint8Array<ArrayBuffer>,
@@ -45,11 +118,19 @@ export function randomEncryptMetadata(): EncryptMetadata {
 export async function importCtrKey(
   meta: EncryptMetadata,
   usage: 'encrypt' | 'decrypt',
+  masterKey?: CryptoKey,
 ): Promise<{ key: CryptoKey; iv: Uint8Array<ArrayBuffer> }> {
   if (meta.algorithm !== EncryptionCipher.Aes256Ctr) {
     throw new Error(`Unsupported encryption algorithm: ${meta.algorithm}`);
   }
-  const keyBytes = base64ToBytes(meta.key_plain_text);
+  // 历史记录是 key_plain_text；新记录落库前已信封加密，读时解封。
+  // 解封需要主密钥，缺了就明确报错，绝不退回「拿密文当密钥」。
+  let effective = meta;
+  if (meta.key_wrapped) {
+    if (!masterKey) throw new Error('Wrapped file key requires the encryption master key');
+    effective = await unwrapEncryptMetadata(meta, masterKey);
+  }
+  const keyBytes = base64ToBytes(effective.key_plain_text ?? '');
   const iv = base64ToBytes(meta.iv);
   if (keyBytes.byteLength !== 32 || iv.byteLength !== 16) {
     throw new Error('Corrupted encryption metadata');

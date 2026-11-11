@@ -29,6 +29,7 @@
 import { getSql } from '../db';
 import { AppError, CodeOpenIDNotLinked, CodeParamErr, CodeUserBaned } from '../lib/errors';
 import { randomString, timingSafeEqual } from '../lib/crypto';
+import { verifyIdToken } from '../lib/oidcVerify';
 import { logAudit } from './audit';
 import { AppContext } from './context';
 import type { UserRow } from '../db/types';
@@ -165,11 +166,37 @@ export async function handleCallback(
   const accessToken = tokenJson.access_token;
   if (!accessToken) throw new AppError(CodeParamErr, 'OIDC token response missing access_token');
 
-  // --- 2. 校验 id_token 的 nonce（防重放）；payload 从 JWT 中段解出 ---
+  // --- 2. 用 JWKS 验签 id_token，并校验 iss/aud/exp/iat/nonce ---
+  // 原来只解 payload 看 nonce，userinfo 里一个 email_verified:true 就能
+  // 接管任意本地账号（含管理员）。信任锚必须是 IdP 私钥签过的 id_token。
+  const allowUnsigned = ctx.settings.getBool('oidc_allow_unsigned_id_token', false);
+  if (!tokenJson.id_token && !allowUnsigned) {
+    throw new AppError(CodeParamErr, 'OIDC token response missing id_token');
+  }
+  let signedClaims: Record<string, unknown> | null = null;
   if (tokenJson.id_token) {
-    const claims = decodeJwtPayload(tokenJson.id_token);
-    if (claims && typeof claims.nonce === 'string' && !timingSafeEqual(claims.nonce, loginState.nonce)) {
-      throw new AppError(CodeParamErr, 'OIDC nonce mismatch');
+    try {
+      signedClaims = await verifyIdToken({
+        env: ctx.env,
+        idToken: tokenJson.id_token,
+        issuer: discovery.issuer,
+        jwksUri: discovery.jwks_uri,
+        clientId: cfg.clientId,
+        expectedNonce: loginState.nonce,
+      });
+    } catch (e) {
+      if (!allowUnsigned) {
+        throw new AppError(
+          CodeParamErr,
+          `OIDC id_token verification failed: ${(e as Error).message}`,
+        );
+      }
+      // 显式降级：仍校验 nonce，但不再把 userinfo 的任何字段当成已验证事实。
+      const claims = decodeJwtPayload(tokenJson.id_token);
+      if (claims && typeof claims.nonce === 'string' &&
+          !timingSafeEqual(claims.nonce, loginState.nonce)) {
+        throw new AppError(CodeParamErr, 'OIDC nonce mismatch');
+      }
     }
   }
 
@@ -178,6 +205,21 @@ export async function handleCallback(
   const subject = String(userinfo.sub ?? '');
   if (!subject) throw new AppError(CodeParamErr, 'OIDC userinfo missing sub');
   const issuer = discovery.issuer;
+
+  // userinfo 是未签名的 JSON：sub / email 必须与已验签的 id_token 一致，
+  // 否则 IdP 侧任意改字段就能冒充别人。
+  if (signedClaims) {
+    if (String(signedClaims.sub ?? '') !== subject) {
+      throw new AppError(CodeParamErr, 'OIDC userinfo subject does not match id_token');
+    }
+    const claimEmail = typeof signedClaims.email === 'string'
+      ? signedClaims.email.trim().toLowerCase() : '';
+    const infoEmail = typeof userinfo.email === 'string'
+      ? userinfo.email.trim().toLowerCase() : '';
+    if (claimEmail && infoEmail && claimEmail !== infoEmail) {
+      throw new AppError(CodeParamErr, 'OIDC userinfo email does not match id_token');
+    }
+  }
 
   const email =
     typeof userinfo.email === 'string' && userinfo.email ? userinfo.email.trim().toLowerCase() : '';
@@ -202,9 +244,12 @@ export async function handleCallback(
   // --- 5. 未绑定：按邮箱找已有账号 ---
   // ⚠️ 仅当 IdP 明确标记邮箱已验证时才允许按邮箱关联，避免未验证的邮箱字段
   // 被冒用、把攻击者的 OIDC 身份绑定到任意已存在（含管理员）账号。
-  const emailVerified =
-    !!email && (userinfo as { email_verified?: unknown }).email_verified === true;
-  if (email && emailVerified) {
+  // email_verified 只认已验签的 id_token。且默认**禁止**凭邮箱自动关联
+  // 已有账号（含管理员）：管理员要显式打开 oidc_auto_link_by_email。
+  // 全新用户自动注册不受影响。
+  const emailVerified = !!email && !!signedClaims && signedClaims.email_verified === true;
+  const autoLinkByEmail = ctx.settings.getBool('oidc_auto_link_by_email', false);
+  if (email && emailVerified && autoLinkByEmail) {
     const existing = await ctx.users.byEmail(email);
     if (existing) {
       if (existing.status !== 'active') throw new AppError(CodeUserBaned, 'Account is not active');

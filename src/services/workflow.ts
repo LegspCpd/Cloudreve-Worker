@@ -257,13 +257,24 @@ export class WorkflowService {
     // 有具备 remoteDownload 能力的从节点就分派过去：文件大小不受
     // MAX_WORKFLOW_BYTES 限制，也不占 Worker 的 CPU 预算。
     // 分派失败（节点不可达等）不阻断任务 —— 回落到请求内执行。
+    // 从节点在真实网络里按域名重新解析，Worker 侧拿不到连接时的 IP、没法
+    // pin，DNS rebinding 能把它引到内网。默认只把 IP 字面量 URL 分派出去；
+    // 域名一律回落到 Worker 内的 safeFetch（CF 出口本身禁止私网）。
+    // 确实需要大文件走从节点的部署，显式配 REMOTE_DOWNLOAD_ALLOW_SLAVE_DOMAIN=1。
+    const dispatchHost = new URL(safeUrl).hostname;
+    const isIpLiteral =
+      /^\d{1,3}(?:\.\d{1,3}){3}$/.test(dispatchHost) || dispatchHost.includes(':');
+    const canDispatch =
+      isIpLiteral || this.ctx.env.REMOTE_DOWNLOAD_ALLOW_SLAVE_DOMAIN === '1';
     try {
-      const dispatch = await dispatchRemoteDownload(this.ctx.env, {
-        taskId: task.id,
-        userId: user.id,
-        url: safeUrl,
-        dst: args.dst,
-      });
+      const dispatch = canDispatch
+        ? await dispatchRemoteDownload(this.ctx.env, {
+            taskId: task.id,
+            userId: user.id,
+            url: safeUrl,
+            dst: args.dst,
+          })
+        : null;
       if (dispatch) {
         try {
           await markDispatched(this.ctx, task.id, dispatch);

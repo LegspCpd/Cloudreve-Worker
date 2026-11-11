@@ -111,8 +111,13 @@ jobs:
 
       # 文件加密原语（AES-256-CTR）回归：守「前端块对齐分片加密 == 单流」与
       # 「后端任意块边界流式解密能还原」这两条 —— 它们是加密文件能否下载的底线。
-      - name: 文件加密原语回归
+      - name: 文件加密原语回归（含密钥信封加密）
         run: npm run test:enc
+
+      # OIDC id_token 的 JWKS 验签：本地生成 RSA 密钥对构造真 JWT，
+      # 验证签名 / iss / aud / exp / nonce / alg=none 全部拦得住。
+      - name: OIDC id_token 验签回归
+        run: npm run test:oidc-verify
 
       # SQL 适配层（postgres.js）：占位符生成、惰性查询、事务顺序/回滚。
       # 它守住「换数据库驱动不改查询」这条 —— 所有 repo 都走同一个 Sql 接口。

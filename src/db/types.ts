@@ -314,8 +314,13 @@ export enum EncryptionCipher {
  */
 export interface EncryptMetadata {
   algorithm: EncryptionCipher;
-  key_plain_text: string; // base64
+  /** 明文文件密钥：只用于回传前端做客户端加密，以及读取历史记录。 */
+  key_plain_text?: string; // base64
   iv: string; // base64
+  /** 落库形态：用部署级主密钥 AES-GCM 信封加密后的文件密钥。 */
+  key_wrapped?: string; // base64
+  wrap_iv?: string; // base64, 12 bytes
+  wrap_version?: number;
 }
 
 export interface TaskPublicState {

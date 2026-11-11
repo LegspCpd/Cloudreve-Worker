@@ -1567,7 +1567,8 @@ async function upsertOAuthClient(c: Context<AppBindings>, id: number | null) {
   // 登记白名单时就把危险 scheme 挡掉（javascript:/data:/明文 http 等）。
   // 授权时虽然只做精确匹配，但白名单本身可以是任意字符串 —— 这里不校验，
   // 管理面板一旦被 XSS 就能登记一个恶意回调。
-  for (const uri of redirectUris) assertSafeRedirectUri(uri);
+  // 管理端登记的白名单后续会做精确匹配，这里只兜住危险 scheme。
+  for (const uri of redirectUris) assertSafeRedirectUri(uri, true);
   const scopes = jsonArray(body.scopes).map(String);
   const props = (body.props as Record<string, unknown>) ?? {};
   const isEnabled = body.is_enabled !== false;

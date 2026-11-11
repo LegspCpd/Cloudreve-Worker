@@ -98,6 +98,9 @@ try {
     encryptStream,
     decryptStream,
     decryptFull,
+    deriveFileMasterKey,
+    wrapEncryptMetadata,
+    unwrapEncryptMetadata,
   } = await import(`file://${bundlePath}`);
 
   console.log('\n[1] 元数据形态');
@@ -198,6 +201,29 @@ try {
     else console.log(`      mismatch at ${start}-${end}`);
   }
   check(`${cases.length} 个 Range 窗口全部一致`, rangeOk === cases.length, `${rangeOk}/${cases.length}`);
+
+  console.log('\n[5] 密钥信封加密（落库不再有明文密钥）');
+  const masterA = await deriveFileMasterKey({ ENCRYPTION_MASTER_KEY: 'master-key-A' }, 'fallback');
+  const masterB = await deriveFileMasterKey({ ENCRYPTION_MASTER_KEY: 'master-key-B' }, 'fallback');
+  const wrapped = await wrapEncryptMetadata(meta, masterA);
+  check('落库形态不含 key_plain_text', !('key_plain_text' in wrapped), JSON.stringify(wrapped).slice(0, 80));
+  check('落库形态含 key_wrapped / wrap_iv / 版本',
+    !!wrapped.key_wrapped && !!wrapped.wrap_iv && wrapped.wrap_version === 1);
+  const unwrapped = await unwrapEncryptMetadata(wrapped, masterA);
+  check('解封还原出原始文件密钥', unwrapped.key_plain_text === meta.key_plain_text);
+  const { key: wrappedKey } = await importCtrKey(wrapped, 'encrypt', masterA);
+  const { key: plainKey } = await importCtrKey(meta, 'encrypt');
+  const probe = new TextEncoder().encode('wrapped-key-equivalence');
+  const c1 = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CTR', counter: new Uint8Array(16), length: 64 }, wrappedKey, probe));
+  const c2 = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CTR', counter: new Uint8Array(16), length: 64 }, plainKey, probe));
+  check('信封解出的密钥与原密钥等价', Buffer.from(c1).equals(Buffer.from(c2)));
+  let wrongKeyRejected = false;
+  try { await unwrapEncryptMetadata(wrapped, masterB); } catch { wrongKeyRejected = true; }
+  check('换主密钥解不开（AES-GCM 认证）', wrongKeyRejected);
+  let missingKeyRejected = false;
+  try { await importCtrKey(wrapped, 'decrypt'); } catch { missingKeyRejected = true; }
+  check('缺主密钥时明确报错，不拿密文当密钥', missingKeyRejected);
+  check('历史明文记录仍可读（向后兼容）', (await importCtrKey(meta, 'decrypt')).key !== undefined);
 } catch (e) {
   failed += 1;
   console.error('  ERROR', e);

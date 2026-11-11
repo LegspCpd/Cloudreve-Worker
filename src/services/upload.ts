@@ -44,7 +44,10 @@ import {
   Err,
 } from '../lib/errors';
 import { randomString, timingSafeEqual, uuidv4 } from '../lib/crypto';
-import { encryptStream, importCtrKey, randomEncryptMetadata } from '../lib/encCrypto';
+import {
+  encryptStream, importCtrKey, randomEncryptMetadata,
+  deriveFileMasterKey, wrapEncryptMetadata,
+} from '../lib/encCrypto';
 import { extOf } from './savepath';
 import { isRelayEnabled, type UploadedPart, type UploadSession } from '../storage/types';
 import { publish } from './events';
@@ -190,7 +193,14 @@ export class UploadService {
     if (wantsEncryption) {
       encryptMeta = randomEncryptMetadata();
     }
-    const encMetaJson = encryptMeta ? JSON.stringify(encryptMeta) : null;
+    // 前端要明文密钥做客户端加密（response.encrypt_metadata 原样回传），
+    // 但库里只存信封加密后的版本 —— DB 泄露不再直接得到文件密钥。
+    const encMasterKey = encryptMeta
+      ? await deriveFileMasterKey(this.ctx.env, this.ctx.settings.secretKey)
+      : null;
+    const encMetaJson = encryptMeta && encMasterKey
+      ? JSON.stringify(await wrapEncryptMetadata(encryptMeta, encMasterKey))
+      : null;
 
     // 目标文件行：已存在则复用（新增版本），否则先建占位
     let fileRow: FileRow;
@@ -711,7 +721,8 @@ export class UploadService {
     let putBody = body;
     if (shouldEncrypt) {
       const meta = randomEncryptMetadata();
-      encMetaJson = JSON.stringify(meta);
+      const wrapKey = await deriveFileMasterKey(this.ctx.env, this.ctx.settings.secretKey);
+      encMetaJson = JSON.stringify(await wrapEncryptMetadata(meta, wrapKey));
       const { key, iv } = await importCtrKey(meta, 'encrypt');
       putBody = encryptStream(body, key, iv);
     }

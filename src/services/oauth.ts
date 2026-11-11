@@ -51,7 +51,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * 作为「接受任意回调」之上的最小安全闸门；管理端登记客户端白名单时也用它兜住
  * 明显危险的 scheme（管理面板被 XSS 时少一条路）。
  */
-export function assertSafeRedirectUri(uri: string): void {
+export function assertSafeRedirectUri(uri: string, allowExternal = false): void {
   // 同源相对路径：永远跳不出本站，比任何绝对 URL 都安全。
   if (uri.startsWith('/') && !uri.startsWith('//')) return;
   // `//host/path` 协议相对：会跳到别的主机（且可能是明文 http），明确拒绝。
@@ -74,6 +74,15 @@ export function assertSafeRedirectUri(uri: string): void {
     if (!isLocal) {
       throw new AppError(CodeParamErr, 'Plaintext http redirect URI is not allowed');
     }
+  }
+  // auto_provisioned 客户端默认不接受外部 https 回调：授权码会被发到任意
+  // 站点。官方 CLI / 桌面端用 loopback 或 cloudreve:// 自定义 scheme 就够。
+  // 确实需要外部 https 的部署，把 oauth_auto_provision_external_redirect 设成 1。
+  if (!allowExternal && scheme === 'https:') {
+    throw new AppError(
+      CodeParamErr,
+      'External https redirect URI is not allowed for auto-provisioned clients',
+    );
   }
 }
 
@@ -341,7 +350,10 @@ export class OAuthService {
         throw new AppError(CodeParamErr, 'Invalid redirect URI');
       }
     } else if (app.props.auto_provisioned) {
-      assertSafeRedirectUri(args.redirect_uri);
+      assertSafeRedirectUri(
+        args.redirect_uri,
+        this.ctx.settings.getBool('oauth_auto_provision_external_redirect', false),
+      );
     } else {
       throw new AppError(
         CodeParamErr,

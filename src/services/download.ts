@@ -17,7 +17,7 @@ import { FileSystemService, type DirectLinkInfo } from './fs';
 import { FileSystemType, URI } from './uri';
 import { type EncryptMetadata, type EntityRow, type FileRow } from '../db/types';
 import { FileType } from '../lib/boolset';
-import { decryptStream, importCtrKey, incrementCounter } from '../lib/encCrypto';
+import { decryptStream, importCtrKey, incrementCounter, deriveFileMasterKey } from '../lib/encCrypto';
 import {
   AppError,
   CodeFileNotFound,
@@ -315,7 +315,8 @@ export class DownloadService {
       let key: CryptoKey;
       let iv: Uint8Array<ArrayBuffer>;
       try {
-        ({ key, iv } = await importCtrKey(meta, 'decrypt'));
+        const masterKey = await deriveFileMasterKey(this.ctx.env, this.ctx.settings.secretKey);
+        ({ key, iv } = await importCtrKey(meta, 'decrypt', masterKey));
       } catch (e) {
         throw new AppError(
           CodeEncryptError,
