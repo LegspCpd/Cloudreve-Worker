@@ -29,21 +29,17 @@ export async function deriveFileMasterKey(
 ): Promise<CryptoKey> {
   const master = env.ENCRYPTION_MASTER_KEY?.trim() || fallbackSecret;
   if (!master) throw new Error('Encryption master key is unavailable');
-  const ikm = await crypto.subtle.importKey(
-    'raw', new TextEncoder().encode(master), 'HKDF', false, ['deriveKey'],
+  // 刻意不用 HKDF：CF Workers / ESA 的 WebCrypto 对 deriveKey(HKDF) 支持
+  // 不一致，而 digest(SHA-256) + importKey(AES-GCM) 是所有实现必有的。
+  // 加固定域分隔前缀，避免与别的用途派生出同一把密钥。
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode('cloudreve-edge/file-key/v1:' + master),
   );
-  return crypto.subtle.deriveKey(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: new TextEncoder().encode('cloudreve-edge/file-key/v1'),
-      info: new TextEncoder().encode('aes-256-gcm-wrap'),
-    },
-    ikm,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt'],
-  );
+  return crypto.subtle.importKey('raw', digest, { name: 'AES-GCM' }, false, [
+    'encrypt',
+    'decrypt',
+  ]);
 }
 
 /** 把明文文件密钥信封加密成可落库的形态。 */
