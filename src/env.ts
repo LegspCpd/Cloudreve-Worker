@@ -84,6 +84,13 @@ export interface Env {
   FRONTEND_URL?: string;
   /** 文件加密的独立主密钥（不入库）。不配时由站点 secret_key 派生。 */
   ENCRYPTION_MASTER_KEY?: string;
+  /**
+   * 主密钥轮换过渡期专用：同时持有上一把主密钥，读 enc_meta 时旧信封也能解封。
+   * 轮换流程：先设 `ENCRYPTION_MASTER_KEY=新` + `ENCRYPTION_MASTER_KEY_PREVIOUS=旧` 部署，
+   * 跑 `scripts/rotate-master-key.mjs` 把存量记录重加密到新密钥，再去掉 PREVIOUS。
+   * 不配则只认当前主密钥。
+   */
+  ENCRYPTION_MASTER_KEY_PREVIOUS?: string;
   /** 填 1 才允许把域名型远程下载 URL 分派给从节点（有 DNS rebinding 风险）。 */
   REMOTE_DOWNLOAD_ALLOW_SLAVE_DOMAIN?: string;
   ENVIRONMENT?: string;

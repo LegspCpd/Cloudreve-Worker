@@ -28,6 +28,45 @@ export async function deriveFileMasterKey(
   fallbackSecret: string,
 ): Promise<CryptoKey> {
   const master = env.ENCRYPTION_MASTER_KEY?.trim() || fallbackSecret;
+  return masterKeyFromMaterial(master);
+}
+
+/**
+ * 当前 + 上一把主密钥（轮换过渡期用）。
+ *
+ * 部署同时持有 `ENCRYPTION_MASTER_KEY` 与 `ENCRYPTION_MASTER_KEY_PREVIOUS` 时，
+ * 读 enc_meta 既认新信封也认旧信封，这样跑 `rotate-master-key.mjs` 重加密存量
+ * 记录期间不用停机：旧记录还没轮到就仍用旧密钥解，轮到的已经用新密钥封。
+ * 过渡结束去掉 PREVIOUS 即可。
+ */
+export interface MasterKeySet {
+  primary: CryptoKey;
+  previous?: CryptoKey;
+}
+export type MasterKeyInput = CryptoKey | MasterKeySet | undefined;
+
+/** 把单把密钥或集合归一成 { primary, previous }。 */
+function resolveMasterKey(
+  input?: MasterKeyInput,
+): { primary?: CryptoKey; previous?: CryptoKey } {
+  if (!input) return {};
+  if (input instanceof CryptoKey) return { primary: input };
+  return { primary: input.primary, previous: input.previous };
+}
+
+export async function deriveFileMasterKeys(
+  env: { ENCRYPTION_MASTER_KEY?: string; ENCRYPTION_MASTER_KEY_PREVIOUS?: string },
+  fallbackSecret: string,
+): Promise<MasterKeySet> {
+  const primary = await deriveFileMasterKey(env, fallbackSecret);
+  const prev = env.ENCRYPTION_MASTER_KEY_PREVIOUS?.trim();
+  if (!prev) return { primary };
+  // 上一把密钥是显式给定值，没有 secret_key 兜底这一说。
+  return { primary, previous: await masterKeyFromMaterial(prev) };
+}
+
+/** 把明文主密钥材料派生为 AES-GCM 密钥（所有运行环境一致的实现，避开 HKDF 差异）。 */
+async function masterKeyFromMaterial(master: string): Promise<CryptoKey> {
   if (!master) throw new Error('Encryption master key is unavailable');
   // 刻意不用 HKDF：CF Workers / ESA 的 WebCrypto 对 deriveKey(HKDF) 支持
   // 不一致，而 digest(SHA-256) + importKey(AES-GCM) 是所有实现必有的。
@@ -62,18 +101,34 @@ export async function wrapEncryptMetadata(
   };
 }
 
-/** 解开信封，还原成含 key_plain_text 的元数据（仅内存中使用）。 */
+/** 解开信封，还原成含 key_plain_text 的元数据（仅内存中使用）。可带上一把主密钥做过渡回退。 */
 export async function unwrapEncryptMetadata(
   meta: EncryptMetadata,
   masterKey: CryptoKey,
+  previousMasterKey?: CryptoKey,
 ): Promise<EncryptMetadata> {
   if (!meta.key_wrapped || !meta.wrap_iv) {
     throw new Error('Corrupted wrapped encryption metadata');
   }
+  try {
+    return await doUnwrap(meta, masterKey);
+  } catch (e) {
+    if (previousMasterKey) {
+      // 过渡期：旧主密钥信封的记录先用上一把密钥试。
+      return await doUnwrap(meta, previousMasterKey);
+    }
+    throw e;
+  }
+}
+
+async function doUnwrap(
+  meta: EncryptMetadata,
+  key: CryptoKey,
+): Promise<EncryptMetadata> {
   const plain = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: base64ToBytes(meta.wrap_iv) },
-    masterKey,
-    base64ToBytes(meta.key_wrapped),
+    { name: 'AES-GCM', iv: base64ToBytes(meta.wrap_iv!) },
+    key,
+    base64ToBytes(meta.key_wrapped!),
   );
   return {
     algorithm: meta.algorithm,
@@ -110,11 +165,11 @@ export function randomEncryptMetadata(): EncryptMetadata {
   };
 }
 
-/** 校验并导入 AES-CTR 密钥。 */
+/** 校验并导入 AES-CTR 密钥。masterKey 可传单把密钥或「当前+上一把」集合（轮换过渡期）。 */
 export async function importCtrKey(
   meta: EncryptMetadata,
   usage: 'encrypt' | 'decrypt',
-  masterKey?: CryptoKey,
+  masterKey?: MasterKeyInput,
 ): Promise<{ key: CryptoKey; iv: Uint8Array<ArrayBuffer> }> {
   if (meta.algorithm !== EncryptionCipher.Aes256Ctr) {
     throw new Error(`Unsupported encryption algorithm: ${meta.algorithm}`);
@@ -123,8 +178,9 @@ export async function importCtrKey(
   // 解封需要主密钥，缺了就明确报错，绝不退回「拿密文当密钥」。
   let effective = meta;
   if (meta.key_wrapped) {
-    if (!masterKey) throw new Error('Wrapped file key requires the encryption master key');
-    effective = await unwrapEncryptMetadata(meta, masterKey);
+    const set = resolveMasterKey(masterKey);
+    if (!set.primary) throw new Error('Wrapped file key requires the encryption master key');
+    effective = await unwrapEncryptMetadata(meta, set.primary, set.previous);
   }
   const keyBytes = base64ToBytes(effective.key_plain_text ?? '');
   const iv = base64ToBytes(meta.iv);

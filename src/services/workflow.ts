@@ -22,7 +22,7 @@ import { FileSystemService } from './fs';
 import { UploadService } from './upload';
 import type { EncryptMetadata, EntityRow, FileRow, TaskRow } from '../db/types';
 import { EntityType, FileType } from '../lib/boolset';
-import { decryptFull, decryptStream, importCtrKey } from '../lib/encCrypto';
+import { decryptFull, decryptStream, importCtrKey, deriveFileMasterKeys } from '../lib/encCrypto';
 import { AppError, CodeFeatureNotEnabled, Err } from '../lib/errors';
 import { createZipStream, type ZipEntry } from '../lib/zip';
 import {
@@ -414,9 +414,11 @@ export class WorkflowService {
       const read: RangeReader = async (start, end) => {
         if (entity.enc_meta) {
           if (!plainCache) {
+            const masterKeys = await deriveFileMasterKeys(this.ctx.env, this.ctx.settings.secretKey);
             const { key, iv } = await importCtrKey(
               JSON.parse(entity.enc_meta) as EncryptMetadata,
               'decrypt',
+              masterKeys,
             );
             const full = await driver.get(entity.source, null);
             if (!full?.body) throw new ZipError('Failed to read encrypted archive');
@@ -761,7 +763,8 @@ export class WorkflowService {
       } catch {
         throw new AppError(50002, 'Corrupted encryption metadata');
       }
-      const { key, iv } = await importCtrKey(meta, 'decrypt');
+      const masterKeys = await deriveFileMasterKeys(this.ctx.env, this.ctx.settings.secretKey);
+      const { key, iv } = await importCtrKey(meta, 'decrypt', masterKeys);
       return decryptStream(content.body as ReadableStream<Uint8Array>, key, iv);
     }
     return content.body as ReadableStream<Uint8Array>;

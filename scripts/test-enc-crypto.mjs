@@ -99,6 +99,7 @@ try {
     decryptStream,
     decryptFull,
     deriveFileMasterKey,
+    deriveFileMasterKeys,
     wrapEncryptMetadata,
     unwrapEncryptMetadata,
   } = await import(`file://${bundlePath}`);
@@ -224,6 +225,35 @@ try {
   try { await importCtrKey(wrapped, 'decrypt'); } catch { missingKeyRejected = true; }
   check('缺主密钥时明确报错，不拿密文当密钥', missingKeyRejected);
   check('历史明文记录仍可读（向后兼容）', (await importCtrKey(meta, 'decrypt')).key !== undefined);
+
+  console.log('\n[8] 主密钥轮换过渡：用上一把密钥也能解旧信封');
+  const prevA = await deriveFileMasterKey({ ENCRYPTION_MASTER_KEY: 'master-key-A' }, 'fallback');
+  const curB = await deriveFileMasterKey({ ENCRYPTION_MASTER_KEY: 'master-key-B' }, 'fallback');
+  const keySet = await deriveFileMasterKeys(
+    { ENCRYPTION_MASTER_KEY: 'master-key-B', ENCRYPTION_MASTER_KEY_PREVIOUS: 'master-key-A' },
+    'fallback',
+  );
+  check('deriveFileMasterKeys 返回 primary + previous',
+    keySet.primary !== undefined && keySet.previous !== undefined);
+  check('PREVIOUS 缺省时只返回 primary', (await deriveFileMasterKeys({ ENCRYPTION_MASTER_KEY: 'master-key-B' }, 'fallback')).previous === undefined);
+  const wrappedByA = await wrapEncryptMetadata(meta, prevA);
+  // 只用当前密钥 B 解旧信封 A → 应失败
+  let curAloneRejected = false;
+  try { await unwrapEncryptMetadata(wrappedByA, curB); } catch { curAloneRejected = true; }
+  check('仅当前密钥解不开旧信封', curAloneRejected);
+  // 用「当前+上一把」集合 → 回退到上一把应能解开
+  const unwrappedViaSet = await unwrapEncryptMetadata(wrappedByA, keySet.primary, keySet.previous);
+  check('带上一把密钥的集合能解旧信封', unwrappedViaSet.key_plain_text === meta.key_plain_text);
+  // importCtrKey 走集合也能读旧信封
+  const { key: setKey } = await importCtrKey(wrappedByA, 'decrypt', keySet);
+  check('importCtrKey 接受密钥集合解旧信封', setKey !== undefined);
+  // 单把 CryptoKey 仍兼容（不破坏既有调用）
+  const { key: singleKey } = await importCtrKey(wrappedByA, 'decrypt', prevA);
+  check('importCtrKey 仍接受单把密钥', singleKey !== undefined);
+  // 集合里没有正确的上一把 → 仍失败（不静默错解）
+  let wrongSetRejected = false;
+  try { await unwrapEncryptMetadata(wrappedByA, curB, curB); } catch { wrongSetRejected = true; }
+  check('集合里无正确上一把密钥时仍报错', wrongSetRejected);
 } catch (e) {
   failed += 1;
   console.error('  ERROR', e);

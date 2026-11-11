@@ -33,7 +33,7 @@ import { kvFor } from '../lib/kvRouter';
 import { edgeCacheMatch, edgeCachePut } from '../lib/edgeCache';
 import type { AppContext } from '../services/context';
 import type { EncryptMetadata, FileRow } from '../db/types';
-import { decryptFull, importCtrKey, deriveFileMasterKey } from '../lib/encCrypto';
+import { decryptFull, importCtrKey, deriveFileMasterKeys } from '../lib/encCrypto';
 import { AppContext as AppContextClass } from '../services/context';
 import { FileSystemService } from '../services/fs';
 import { parseFileViewers } from '../settings/fileViewers';
@@ -1016,8 +1016,8 @@ fileRoutes.get('/archive', async (c) => {
         if (!plainCache) {
           const full = await driver.get(entity.source, null);
           if (!full?.body) throw new ZipError('Failed to read encrypted archive');
-          const masterKey = await deriveFileMasterKey(ctx.env, ctx.settings.secretKey);
-          const { key, iv } = await importCtrKey(encMeta, 'decrypt', masterKey);
+          const masterKeys = await deriveFileMasterKeys(ctx.env, ctx.settings.secretKey);
+          const { key, iv } = await importCtrKey(encMeta, 'decrypt', masterKeys);
           plainCache = await decryptFull(full.body as ReadableStream<Uint8Array>, key, iv);
         }
         return plainCache.slice(start, end + 1);

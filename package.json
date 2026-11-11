@@ -11,6 +11,7 @@
     "build": "node scripts/fetch-frontend.mjs && wrangler deploy --dry-run --outdir=dist",
     "typecheck": "tsc --noEmit",
     "db:migrate": "node scripts/migrate.mjs",
+    "db:rotate-key": "node scripts/rotate-master-key.mjs",
     "db:seed": "node scripts/seed.mjs",
     "db:sync": "node scripts/db-sync.mjs",
     "db:sync:verify": "node scripts/db-sync.mjs --verify-only",
