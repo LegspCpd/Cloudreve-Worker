@@ -420,15 +420,18 @@ adminContentRoutes.post('/user/:id/calibrate', async (c) => {
 // 文件
 // ---------------------------------------------------------------------------
 
-/** 文件对外形态，对齐前端 `File`。`user_hash_id` / `file_hash_id` 是行内头像要用的。 */
+/** 文件对外形态，对齐前端 `File`。`user_hash_id` / `file_hash_id` 是行内头像要用的。
+ *  `ownerPre` 供列表页批量预取 owner 后传入，避免逐行查库；详情页不传则自查。 */
 async function fileToResponse(
   codec: HashIDCodec,
   ctx: ReturnType<typeof ctxOf>,
   f: Record<string, unknown>,
+  ownerPre?: { nick: unknown; email: unknown } | null,
 ) {
   const id = num(f.id);
   const ownerId = num(f.owner_id);
-  const owner = ownerId ? await ctx.users.byId(ownerId) : null;
+  const owner =
+    ownerPre !== undefined ? ownerPre : ownerId ? await ctx.users.byId(ownerId) : null;
   return {
     id,
     created_at: iso(f.created_at),
@@ -515,8 +518,93 @@ adminContentRoutes.post('/file', async (c) => {
     params,
   )) as Record<string, unknown>[];
 
+  // 列表页批量补 edges。前端 FileRow 逐列读：
+  //   edges.owner（归属列）/ edges.metadata（「上传中」角标）/
+  //   edges.entities（Blob 占用列 + 加密状态）/ edges.direct_links、edges.shares（图标角标）。
+  // 全部一次 ANY 查询取回，避免逐行 N+1。
+  const fileIds = [...new Set(rows.map((r) => num(r.id)).filter(Boolean))];
+  const ownerIds = [...new Set(rows.map((r) => num(r.owner_id)).filter(Boolean))];
+  const [metaRows, entRows, linkRows, shareRows, ownerRows] = await Promise.all([
+    fileIds.length ? ctx.metadata.listByFiles(fileIds, true) : Promise.resolve([]),
+    fileIds.length
+      ? (sql(
+          `SELECT fe.file_id AS fid, e.* FROM entities e
+           JOIN file_entities fe ON fe.entity_id = e.id
+           WHERE fe.file_id = ANY($1::int[]) AND e.deleted_at IS NULL ORDER BY e.id ASC`,
+          [fileIds],
+        ) as Promise<Record<string, unknown>[]>)
+      : Promise.resolve([]),
+    fileIds.length
+      ? (sql(
+          'SELECT id, file_id, name, downloads, speed FROM direct_links WHERE file_id = ANY($1::int[]) AND deleted_at IS NULL',
+          [fileIds],
+        ) as Promise<Record<string, unknown>[]>)
+      : Promise.resolve([]),
+    fileIds.length
+      ? (sql(
+          'SELECT id, file_shares, downloads FROM shares WHERE file_shares = ANY($1::int[]) AND deleted_at IS NULL',
+          [fileIds],
+        ) as Promise<Record<string, unknown>[]>)
+      : Promise.resolve([]),
+    ownerIds.length
+      ? (sql('SELECT id, nick, email FROM users WHERE id = ANY($1::int[])', [
+          ownerIds,
+        ]) as Promise<Record<string, unknown>[]>)
+      : Promise.resolve([]),
+  ]);
+  const metaByFile = new Map<number, Record<string, unknown>[]>();
+  for (const m of metaRows) {
+    const fid = num((m as unknown as { file_id: number }).file_id);
+    if (!metaByFile.has(fid)) metaByFile.set(fid, []);
+    metaByFile.get(fid)!.push({
+      id: num(m.id),
+      name: String(m.name ?? ''),
+      value: String(m.value ?? ''),
+      is_public: Boolean(m.is_public),
+    });
+  }
+  const entByFile = new Map<number, Record<string, unknown>[]>();
+  for (const e of entRows) {
+    const fid = num((e as unknown as { fid: number }).fid);
+    if (!entByFile.has(fid)) entByFile.set(fid, []);
+    entByFile.get(fid)!.push(entityToResponse(codec, e));
+  }
+  const linkByFile = new Map<number, Record<string, unknown>[]>();
+  for (const l of linkRows) {
+    const fid = num(l.file_id);
+    if (!linkByFile.has(fid)) linkByFile.set(fid, []);
+    linkByFile.get(fid)!.push({ id: num(l.id), name: String(l.name ?? ''), downloads: num(l.downloads), speed: num(l.speed) });
+  }
+  const shareByFile = new Map<number, Record<string, unknown>[]>();
+  for (const s of shareRows) {
+    const fid = num(s.file_shares);
+    if (!shareByFile.has(fid)) shareByFile.set(fid, []);
+    shareByFile.get(fid)!.push({ id: num(s.id), downloads: num(s.downloads) });
+  }
+  const ownerById = new Map(ownerRows.map((u) => [num(u.id), u]));
+
   const out = [];
-  for (const f of rows) out.push(await fileToResponse(codec, ctx, f));
+  for (const f of rows) {
+    const fid = num(f.id);
+    const ownerId = num(f.owner_id);
+    const ownerRow = ownerById.get(ownerId);
+    const base = await fileToResponse(
+      codec,
+      ctx,
+      f,
+      ownerRow ? { nick: ownerRow.nick, email: ownerRow.email } : ownerRow === undefined ? undefined : null,
+    );
+    out.push({
+      ...base,
+      edges: {
+        ...base.edges,
+        metadata: metaByFile.get(fid) ?? [],
+        entities: entByFile.get(fid) ?? [],
+        direct_links: linkByFile.get(fid) ?? [],
+        shares: shareByFile.get(fid) ?? [],
+      },
+    });
+  }
   return ok(c, { files: out, pagination: paginationOf(page, pageSize, num(countRows[0]?.total)) });
 });
 
@@ -645,10 +733,28 @@ adminContentRoutes.post('/file/batch/delete', async (c) => {
 // 实体（物理对象）
 // ---------------------------------------------------------------------------
 
-/** 实体对外形态，对齐前端 `Entity`。 */
-function entityToResponse(codec: HashIDCodec, e: Record<string, unknown>) {
+/** 实体对外形态，对齐前端 `Entity`。`edges` 由调用方按需批量填充。 */
+function entityToResponse(
+  codec: HashIDCodec,
+  e: Record<string, unknown>,
+  edges: Record<string, unknown> = {},
+) {
   const id = num(e.id);
   const createdBy = num(e.created_by);
+  const baseProps = (e.recycle_options as Record<string, unknown> | undefined) ?? {};
+  // 前端靠 props.encrypt_metadata.algorithm 显示加密标识；enc_meta 是单独的
+  // JSON 列，这里只回显算法名，不回显 iv/密钥材料。
+  let encAlgorithm: unknown;
+  if (e.enc_meta) {
+    try {
+      encAlgorithm = (JSON.parse(String(e.enc_meta)) as { algorithm?: unknown }).algorithm;
+    } catch {
+      // 损坏的 enc_meta 不阻断列表
+    }
+  }
+  const props = encAlgorithm
+    ? { ...baseProps, encrypt_metadata: { algorithm: encAlgorithm } }
+    : baseProps;
   return {
     id,
     created_at: iso(e.created_at),
@@ -661,10 +767,49 @@ function entityToResponse(codec: HashIDCodec, e: Record<string, unknown>) {
     storage_policy_entities: num(e.storage_policy_entities),
     upload_session_id: (e.upload_session_id as string) ?? null,
     created_by: createdBy,
-    props: e.recycle_options ?? {},
+    props,
     user_hash_id: createdBy ? codec.encodeUserID(createdBy) : undefined,
-    edges: {},
+    edges,
   };
+}
+
+/** 批量取实体的 owner 与存储策略（列表页 edges 填充，避免逐行查库）。 */
+async function entityEdgesBatch(
+  sql: Sql,
+  codec: HashIDCodec,
+  rows: Record<string, unknown>[],
+): Promise<Map<number, Record<string, unknown>>> {
+  const edgesByEntity = new Map<number, Record<string, unknown>>();
+  const userIds = [...new Set(rows.map((r) => num(r.created_by)).filter(Boolean))];
+  const policyIds = [...new Set(rows.map((r) => num(r.storage_policy_entities)).filter(Boolean))];
+  if (userIds.length === 0 && policyIds.length === 0) return edgesByEntity;
+
+  const [userRows, policyRows] = await Promise.all([
+    userIds.length
+      ? (sql('SELECT id, nick, created_at FROM users WHERE id = ANY($1::int[])', [
+          userIds,
+        ]) as Promise<Record<string, unknown>[]>)
+      : Promise.resolve([]),
+    policyIds.length
+      ? (sql('SELECT id, name FROM storage_policies WHERE id = ANY($1::int[])', [
+          policyIds,
+        ]) as Promise<Record<string, unknown>[]>)
+      : Promise.resolve([]),
+  ]);
+  const userById = new Map(userRows.map((u) => [num(u.id), u]));
+  const policyById = new Map(policyRows.map((p) => [num(p.id), p]));
+
+  for (const r of rows) {
+    const user = userById.get(num(r.created_by));
+    const policy = policyById.get(num(r.storage_policy_entities));
+    edgesByEntity.set(num(r.id), {
+      user: user
+        ? { id: num(user.id), nick: String(user.nick ?? ''), created_at: iso(user.created_at) }
+        : undefined,
+      storage_policy: policy ? { id: num(policy.id), name: String(policy.name ?? '') } : undefined,
+    });
+  }
+  return edgesByEntity;
 }
 
 /** `POST /admin/entity` —— 实体列表。条件键 `entity_policy` / `entity_user` / `entity_type`。 */
@@ -696,8 +841,11 @@ adminContentRoutes.post('/entity', async (c) => {
     params,
   )) as Record<string, unknown>[];
 
+  // 列表页批量补 edges（前端 Blob 列表的「存储策略」「归属用户」列要读）
+  const edgesByEntity = await entityEdgesBatch(sql, codec, rows);
+
   return ok(c, {
-      entities: rows.map((e) => entityToResponse(codec, e)),
+      entities: rows.map((e) => entityToResponse(codec, e, edgesByEntity.get(num(e.id)) ?? {})),
       pagination: paginationOf(page, pageSize, num(countRows[0]?.total)),
     });
 });
@@ -854,8 +1002,43 @@ adminContentRoutes.post('/share', async (c) => {
     params,
   )) as Record<string, unknown>[];
 
+  // 批量补 edges：前端分享列表的「源文件」列读 edges.file（缺了显示
+  // 「文件已删除」），「归属用户」列读 edges.user。
+  const fileIds = [...new Set(rows.map((r) => num(r.file_shares)).filter(Boolean))];
+  const userIds = [...new Set(rows.map((r) => num(r.user_shares)).filter(Boolean))];
+  const [fileRows, shareUserRows] = await Promise.all([
+    fileIds.length
+      ? (sql('SELECT id, name, type FROM files WHERE id = ANY($1::int[])', [
+          fileIds,
+        ]) as Promise<Record<string, unknown>[]>)
+      : Promise.resolve([]),
+    userIds.length
+      ? (sql('SELECT id, nick, created_at FROM users WHERE id = ANY($1::int[])', [
+          userIds,
+        ]) as Promise<Record<string, unknown>[]>)
+      : Promise.resolve([]),
+  ]);
+  const fileById = new Map(fileRows.map((f) => [num(f.id), f]));
+  const userById = new Map(shareUserRows.map((u) => [num(u.id), u]));
+
+  const out = rows.map((s) => {
+    const fid = num(s.file_shares);
+    const uid = num(s.user_shares);
+    const f = fileById.get(fid);
+    const u = userById.get(uid);
+    return {
+      ...shareToResponse(codec, ctx.settings.siteUrl, s),
+      edges: {
+        file: f ? { id: fid, name: String(f.name ?? ''), type: num(f.type) } : undefined,
+        user: u
+          ? { id: uid, nick: String(u.nick ?? ''), created_at: iso(u.created_at) }
+          : undefined,
+      },
+    };
+  });
+
   return ok(c, {
-      shares: rows.map((s) => shareToResponse(codec, ctx.settings.siteUrl, s)),
+      shares: out,
       pagination: paginationOf(page, pageSize, num(countRows[0]?.total)),
     });
 });
