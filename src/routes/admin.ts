@@ -644,7 +644,12 @@ adminRoutes.post('/user', async (c) => {
 
   try {
     const res = await new UserService(ctx).listUsers({
-      page: Number(body.page ?? 0) || 0,
+      // 前端 UserSetting 发的是 1 基 page（上游 Go 版 service 层做 Page-1 后
+      // 再查库）。users.list 的 offset = page*pageSize 是 0 基语义，这里必须
+      // 换算，否则第一页整页跳过：数据 ≤ 每页条数时管理后台用户列表恒为空
+      // （pagination.total_items 仍正常，看起来就像「用户全被删了」）。
+      // page=0 的旧调用方保持兼容（max(0, ...) 兜底）。
+      page: Math.max(0, (Number(body.page ?? 1) || 1) - 1),
       pageSize,
       orderBy: body.order_by as string | undefined,
       orderDirection: body.order_direction as string | undefined,
