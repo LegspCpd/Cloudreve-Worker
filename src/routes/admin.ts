@@ -637,31 +637,12 @@ adminRoutes.delete('/group/:id', async (c) => {
 // 用户
 // ---------------------------------------------------------------------------
 
-adminRoutes.post('/user', async (c) => {
-  const ctx = ctxOf(c);
-  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
-  const pageSize = Math.min(Number(body.page_size ?? 20) || 20, 100);
-
-  try {
-    const res = await new UserService(ctx).listUsers({
-      // 前端 UserSetting 发的是 1 基 page（上游 Go 版 service 层做 Page-1 后
-      // 再查库）。users.list 的 offset = page*pageSize 是 0 基语义，这里必须
-      // 换算，否则第一页整页跳过：数据 ≤ 每页条数时管理后台用户列表恒为空
-      // （pagination.total_items 仍正常，看起来就像「用户全被删了」）。
-      // page=0 的旧调用方保持兼容（max(0, ...) 兜底）。
-      page: Math.max(0, (Number(body.page ?? 1) || 1) - 1),
-      pageSize,
-      orderBy: body.order_by as string | undefined,
-      orderDirection: body.order_direction as string | undefined,
-      keyword: body.keyword as string | undefined,
-      groupId: body.group_id as string | undefined,
-      status: body.status as string | undefined,
-    });
-    return ok(c, res);
-  } catch (e) {
-    return fail(c, e);
-  }
-});
+// POST /user（用户列表）由 admin-content.ts 提供。这里曾有一份基于
+// UserService.listUsers 的实现，因先注册而遮蔽了 admin-content 那份
+// 对齐前端 User 形状（nick/avatar/edges.group）的实现，导致列表里
+// 昵称/头像/用户组列全空、分页语义也不同。前端的增删改查（GET 详情、
+// PUT 保存、batch/delete、calibrate）也都走 admin-content 那份实现，
+// 列表理应同源。PATCH/DELETE /user/:id 与 reset-link 为边缘版独有，保留。
 
 adminRoutes.patch('/user/:id', async (c) => {
   const ctx = ctxOf(c);
