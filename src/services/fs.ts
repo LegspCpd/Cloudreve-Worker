@@ -1137,6 +1137,51 @@ export class FileSystemService {
     return this.buildFileResponse(file, { owned: true });
   }
 
+  /**
+   * 沿路径逐段确保目录存在（上游 `dbfs.Create` 的链式建目录语义：
+   * 上传会话创建时若父目录缺失会自动补齐，前端文件夹上传依赖此行为）。
+   * 返回最深的目录行；`elements` 为空时返回根目录。
+   * 路径上某个分段的同名项是文件而非目录 → 抛 40016。
+   */
+  async ensureFolderChain(ownerId: number, elements: string[]): Promise<FileRow> {
+    let current = await this.ctx.files.ensureRoot(ownerId);
+    for (const name of elements) {
+      const nameError = validateName(name);
+      if (nameError) throw new AppError(CodeIllegalObjectName, nameError);
+
+      const next = await this.ctx.files.childByName(current.id, name);
+      if (next) {
+        if (next.type !== FileType.Folder || next.file_children === null) {
+          throw new AppError(40016, 'Path segment is not a folder');
+        }
+        current = next;
+        continue;
+      }
+
+      // 缺失的目录：策略继承父目录绑定，回落组默认链
+      let policy: StoragePolicyRow;
+      if (current.storage_policy_files != null) {
+        try {
+          policy = await this.ctx.assertPolicyAllowed(current.storage_policy_files);
+        } catch {
+          policy = await this.ctx.resolvePolicy(null);
+        }
+      } else {
+        policy = await this.ctx.resolvePolicy(null);
+      }
+
+      current = await this.ctx.files.create({
+        type: FileType.Folder,
+        name,
+        ownerId,
+        parentId: current.id,
+        size: 0,
+        policyId: policy.id,
+      });
+    }
+    return current;
+  }
+
   // -------------------------------------------------------------------------
   // 重命名
   // -------------------------------------------------------------------------

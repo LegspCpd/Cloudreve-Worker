@@ -58,7 +58,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   pwa_large_icon: '/static/img/logo512.png',
 
   // --- 注册与登录 ---
-  register_enabled: '1',
+  // 默认关闭（fail-closed）：任何未显式开启的部署（新平台、重置库、独立库）都不会敞开注册。
+  // 空库（尚无用户）时仍放行首个管理员自注册，见 routes/user.ts / services/user.ts 的 isEmpty 引导。
+  register_enabled: '0',
   email_active: '0',
   expose_user_email: '1',
   login_captcha: '0',

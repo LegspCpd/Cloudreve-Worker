@@ -430,7 +430,10 @@ export class UserService {
    *   - 其余 → `CodeEmailExisted`（40032）。
    */
   async register(email: string, password: string, language?: string): Promise<RegisterOutcome> {
-    if (!this.ctx.settings.registerEnabled) {
+    // 见 routes/user.ts：注册默认关闭，空库放行首个管理员自注册
+    const regOpen =
+      this.ctx.settings.registerEnabled || (await this.ctx.users.isEmpty().catch(() => false));
+    if (!regOpen) {
       throw new AppError(40019, 'Registration is not enabled');
     }
 

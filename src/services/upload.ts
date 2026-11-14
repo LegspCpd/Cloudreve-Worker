@@ -148,8 +148,12 @@ export class UploadService {
     this.ctx.assertCapacity(params.size);
 
     const parentUri = uri.parent();
-    const parent = await this.ctx.files.resolvePath(user.id, parentUri.elements);
-    if (!parent) throw new AppError(40016, 'Parent folder does not exist');
+    let parent = await this.ctx.files.resolvePath(user.id, parentUri.elements);
+    if (!parent) {
+      // 上游语义：上传会话创建时若父目录缺失会自动补齐（前端文件夹上传依赖此）。
+      // 单文件上传到已存在的目录不受影响。
+      parent = await this.fs.ensureFolderChain(user.id, parentUri.elements);
+    }
     if (parent.type !== FileType.Folder) throw new AppError(40016, 'Parent is not a folder');
 
     const existing = await this.ctx.files.childByName(parent.id, name);

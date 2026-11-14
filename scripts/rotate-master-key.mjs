@@ -79,6 +79,7 @@ const args = parseArgs(process.argv.slice(2));
 if (args.help || args.h) {
   console.log(`用法：node scripts/rotate-master-key.mjs [选项]
 
+选项：
   --old-key <k>       旧主密钥材料（当前 enc_meta 信封用的）
   --new-key <k>       新主密钥材料（重加密目标）
   --old-from-db       从 settings.secret_key 读旧密钥（未配 ENCRYPTION_MASTER_KEY 的兜底情形）
@@ -88,6 +89,14 @@ if (args.help || args.h) {
   --limit <n>         本批最多处理多少行（默认全量）
   --db-url <url>      覆盖 DATABASE_URL
   -h, --help          显示本帮助
+
+命令示例：
+  干跑统计          node scripts/rotate-master-key.mjs --old-key "$OLD" --new-key "$NEW" --dry-run
+  正式轮换          node scripts/rotate-master-key.mjs --old-key "$OLD" --new-key "$NEW"
+  旧密钥走库兜底    node scripts/rotate-master-key.mjs --old-from-db --new-key "$NEW"
+  轮换后验证        node scripts/rotate-master-key.mjs --new-key "$NEW" --verify
+
+退出码：0 = 成功；1 = 参数错误 / 存在失败记录。脚本可重入，失败行修好后重跑即可。
 `);
   process.exit(0);
 }

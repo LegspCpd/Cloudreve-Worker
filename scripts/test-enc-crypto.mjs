@@ -1,13 +1,18 @@
 /**
  * 文件加密原语的单元测试（`src/lib/encCrypto.ts`）。
  *
- * 重点验证与上游前端 `EncryptedBlob` 的兼容性：
- *   1. 服务端生成的元数据可被 AES-256-CTR 正确使用；
- *   2. 前端按 chunk_size（16 的倍数）分片加密，等价于单流 AES-CTR；
- *   3. 后端按任意块边界流式解密（不足 16 字节缓冲）能还原明文；
- *   4. Range 路径的整段解密（decryptFull）能还原。
+ * 重点验证与上游前端 `EncryptedBlob` 的兼容性，共 8 组约 25 项断言：
+ *   [1] 元数据形态（算法 / 密钥长度 / IV 长度）
+ *   [2] 前端块对齐分片加密 == 单流 AES-CTR
+ *   [3] 任意块边界流式解密还原（单流 + 分片密文）
+ *   [4] encryptStream / decryptStream 互逆，CTR 不扩展密文
+ *   [5] Range 整段解密（decryptFull）还原
+ *   [6] 损坏/短密钥的元数据被拒绝
+ *   [7] Range 按块偏移解密 == 整段解密后切片（8 个窗口）
+ *   [8] 密钥信封加密，及主密钥轮换过渡（PREVIOUS 可解旧信封）
  *
  * 跑法：`npm run test:enc`
+ * 退出码：0 = 全部通过；1 = 存在失败或运行期错误。
  */
 import { build } from 'esbuild';
 import { mkdirSync, rmSync } from 'node:fs';

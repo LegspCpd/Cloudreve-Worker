@@ -45,7 +45,11 @@ userRoutes.post('/', async (c) => {
     ticket?: string;
   };
 
-  if (!ctx.settings.registerEnabled) {
+  // 注册默认关闭（fail-closed）：仅在「显式开启」或「站点尚未初始化（首个管理员自注册）」时放行。
+  // 这样 CF/EO/ESA 三套独立库，只要库里已有用户，未单独配置的部署也不会敞开注册。
+  const regOpen =
+    ctx.settings.registerEnabled || (await ctx.users.isEmpty().catch(() => false));
+  if (!regOpen) {
     return fail(c, new AppError(40019, 'Registration is not enabled'));
   }
   if (!body.email || !body.password) {

@@ -155,7 +155,8 @@ export class SettingsProvider {
     return this.get('hash_id_salt');
   }
   get registerEnabled(): boolean {
-    return this.getBool('register_enabled', true);
+    // fail-closed 兜底：键缺失（未在库里显式设置）时默认关闭，避免任何未配置的部署敞开注册。
+    return this.getBool('register_enabled', false);
   }
   get emailActive(): boolean {
     return this.getBool('email_active', false);
