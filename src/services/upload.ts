@@ -217,8 +217,10 @@ export class UploadService {
         await this.ctx.files.setEncrypted(existing.id, Boolean(encryptMeta));
       }
     } else {
-      fileRow = await this.ctx.files.create({
-        type: FileType.File,
+      // 并发安全：同一文件被两个上传会话同时拖入同一目录时，第一个 INSERT
+      // 成功、第二个撞 (file_children, name) 唯一约束；这里落到已存在的行上，
+      // 当作「新增版本」处理（与串行场景的 existing 分支语义一致）。
+      const res = await this.ctx.files.createFileIfAbsent({
         name,
         ownerId: user.id,
         parentId: parent.id,
@@ -226,7 +228,11 @@ export class UploadService {
         policyId: policy.id,
         encrypted: Boolean(encryptMeta),
       });
-      newFileCreated = true;
+      fileRow = res.row;
+      newFileCreated = res.created;
+      if (!newFileCreated && Boolean(fileRow.encrypted) !== Boolean(encryptMeta)) {
+        await this.ctx.files.setEncrypted(fileRow.id, Boolean(encryptMeta));
+      }
     }
 
     // 实体：占位，等上传完成后写入真实大小并清掉 upload_session_id

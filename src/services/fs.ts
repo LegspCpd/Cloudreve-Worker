@@ -1170,12 +1170,13 @@ export class FileSystemService {
         policy = await this.ctx.resolvePolicy(null);
       }
 
-      current = await this.ctx.files.create({
-        type: FileType.Folder,
-        name,
-        ownerId,
+      // 并发安全：文件夹上传时多个上传会话并行补齐同一批父目录，用
+      // ON CONFLICT DO NOTHING 让第一个插入成功、其余落到已存在的行，
+      // 避免 (file_children, name) 唯一约束冲突（否则整个文件夹上传失败）。
+      current = await this.ctx.files.createFolderIfAbsent({
         parentId: current.id,
-        size: 0,
+        ownerId,
+        name,
         policyId: policy.id,
       });
     }

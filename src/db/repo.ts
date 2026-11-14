@@ -1383,6 +1383,74 @@ export class FileRepo {
   }
 
   /**
+   * 并发安全地创建目录。
+   *
+   * 文件夹上传时，前端会**并行**开启多个上传会话，每个会话都经由
+   * `ensureFolderChain` 尝试补齐同一批缺失的父目录；多个请求在同一时刻
+   * `INSERT` 同一个 `(file_children, name)` 会撞唯一约束
+   * `file_file_children_name`（`ON files (file_children, name) WHERE file_children
+   *  IS NOT NULL`）。
+   *
+   * 这里用 `ON CONFLICT ... DO NOTHING RETURNING`（与 `ensureRoot` 同思路，
+   * 原子且安全）：第一个插入成功、其余落到已存在的行上；为空时回查一次拿到
+   * 那一行（唯一约束保证它一定存在）。返回最终那一行（可能是别的请求刚建的）。
+   */
+  async createFolderIfAbsent(args: {
+    parentId: number;
+    ownerId: number;
+    name: string;
+    policyId?: number | null;
+  }): Promise<FileRow> {
+    const rows = (await this.sql`
+      INSERT INTO files (type, name, owner_id, file_children, size, storage_policy_files, props)
+      VALUES (1, ${args.name}, ${args.ownerId}, ${args.parentId}, 0, ${args.policyId ?? null}, '{}'::jsonb)
+      ON CONFLICT (file_children, name) WHERE file_children IS NOT NULL DO NOTHING
+      RETURNING *
+    `) as Record<string, unknown>[];
+    if (rows[0]) return normalizeFile(rows[0]);
+    // 并发下被其它请求抢先创建：重新查出来（唯一约束保证它一定存在）
+    const existing = await this.childByName(args.parentId, args.name);
+    if (!existing) {
+      // 理论不可达：约束拦住了重复插入，回查应总能拿到行
+      throw new Error('Folder row disappeared after conflict-safe insert');
+    }
+    return existing;
+  }
+
+  /**
+   * 并发安全地创建文件占位（与 `createFolderIfAbsent` 同款思路）。
+   * 同一文件被两个上传会话同时创建时会撞 `(file_children, name)` 唯一约束，
+   * 用 `ON CONFLICT DO NOTHING` 让第一个成功、其余落到已存在的行上。
+   * 返回 `{ row, created }`：created=true 表示本请求新建的行，
+   * false 表示并发下由别的请求创建、这里回查拿到的已存在行。
+   */
+  async createFileIfAbsent(args: {
+    name: string;
+    ownerId: number;
+    parentId: number;
+    size?: number;
+    policyId?: number | null;
+    primaryEntity?: number | null;
+    encrypted?: boolean;
+  }): Promise<{ row: FileRow; created: boolean }> {
+    const rows = (await this.sql`
+      INSERT INTO files (type, name, owner_id, file_children, size, storage_policy_files,
+                         primary_entity, props, encrypted)
+      VALUES (0, ${args.name}, ${args.ownerId}, ${args.parentId}, ${args.size ?? 0},
+              ${args.policyId ?? null}, ${args.primaryEntity ?? null},
+              '{}'::jsonb, ${args.encrypted ?? false})
+      ON CONFLICT (file_children, name) WHERE file_children IS NOT NULL DO NOTHING
+      RETURNING *
+    `) as Record<string, unknown>[];
+    if (rows[0]) return { row: normalizeFile(rows[0]), created: true };
+    const existing = await this.childByName(args.parentId, args.name);
+    if (!existing) {
+      throw new Error('File row disappeared after conflict-safe insert');
+    }
+    return { row: existing, created: false };
+  }
+
+  /**
    * 在指定目录下批量创建文件夹（同名已存在则跳过）。
    *
    * 注册时给新用户铺「初始文件夹」用：一条 `INSERT ... SELECT ... unnest`
