@@ -191,6 +191,11 @@ async function readRar4(
     if (headSize < 7 || headSize > MAX_HEADER) break;
     if (pos + headSize > fileSize) break;
 
+    // 主头 0x0080：头也加密了。文件名读不出来，别静默返回空列表。
+    if (type === 0x73 && flags & 0x0080) {
+      throw new ZipError('RAR headers are encrypted; a password is required');
+    }
+
     // 0x8000：块带 ADD_SIZE，数据区长度由它给出（文件头里是完整 packed size）
     let addSize = 0;
     if (flags & 0x8000) {
@@ -271,6 +276,11 @@ async function readRar5(read: RangeReader, fileSize: number): Promise<ArchiveEnt
     const dataSize = flags & 0x0002 ? take() : 0;
 
     if (type === 5) break; // end of archive
+
+    // type 4 是加密头：后面所有头都是密文，读不出文件名
+    if (type === 4) {
+      throw new ZipError('RAR headers are encrypted; a password is required');
+    }
 
     if (type === 2) {
       const fileFlags = take();

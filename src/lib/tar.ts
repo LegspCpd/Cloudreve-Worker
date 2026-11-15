@@ -212,6 +212,8 @@ export async function walkTar(
     const linkName = pax?.linkpath ?? longLink ?? cstr(block.subarray(157, 257));
 
     name = name.replace(/\\/g, '/');
+    // `tar -cf x.tar .` 打出来的条目都带 `./` 前缀，显示时去掉
+    name = name.replace(/^\.\/+/, '');
     const isDir = type === '5' || name.endsWith('/');
     // 目录名去掉尾斜杠：与 7z / 浏览接口的其它格式保持一致的显示形态
     if (isDir) name = name.replace(/\/+$/, '');
