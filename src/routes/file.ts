@@ -44,12 +44,15 @@ import { UserService } from '../services/user';
 import { subscribe, type FsEvent } from '../services/events';
 import { WorkflowService } from '../services/workflow';
 import {
-  readCentralDirectory,
   ZipIOError,
   type ArchiveEntry,
   type RangeReader,
 } from '../lib/zipread';
-import { readSevenZipDirectory } from '../lib/sevenzip';
+import {
+  detectArchiveFormat,
+  listArchive,
+  type ArchiveSource,
+} from '../lib/archive';
 import { createZipStream } from '../lib/zip';
 import { drain, nameDecoder } from '../services/workflow';
 import { URI } from '../services/uri';
@@ -1016,36 +1019,51 @@ fileRoutes.get('/archive', async (c) => {
       }
     }
 
+    // 加密归档：多次 Range 读都基于明文，解密一次后按区间切片。
+    const ensurePlain = async (): Promise<Uint8Array<ArrayBuffer>> => {
+      if (plainCache) return plainCache;
+      const full = await driver.get(entity.source, null);
+      if (!full?.body) throw new ZipIOError('Failed to read encrypted archive');
+      const masterKeys = await deriveFileMasterKeys(ctx.env, ctx.settings.secretKey);
+      const { key, iv } = await importCtrKey(encMeta!, 'decrypt', masterKeys);
+      plainCache = await decryptFull(full.body as ReadableStream<Uint8Array>, key, iv);
+      return plainCache;
+    };
+
     const read: RangeReader = async (start, end) => {
-      if (encMeta) {
-        if (!plainCache) {
-          const full = await driver.get(entity.source, null);
-          if (!full?.body) throw new ZipIOError('Failed to read encrypted archive');
-          const masterKeys = await deriveFileMasterKeys(ctx.env, ctx.settings.secretKey);
-          const { key, iv } = await importCtrKey(encMeta, 'decrypt', masterKeys);
-          plainCache = await decryptFull(full.body as ReadableStream<Uint8Array>, key, iv);
-        }
-        return plainCache.slice(start, end + 1);
-      }
+      if (encMeta) return (await ensurePlain()).slice(start, end + 1);
       const content = await driver.get(entity.source, `bytes=${start}-${end}`);
       if (!content) throw new ZipIOError(`Failed to read range ${start}-${end}`);
       return drain(content.body as ReadableStream<Uint8Array>);
     };
 
-    // 7z 的文件表本身是压缩的（kEncodedHeader），必须走独立解析器。
-    // 其它扩展名照旧按 ZIP 解析 —— .docx / .jar / .cbz 这类其实也是 zip，
-    // 不能按扩展名一刀切。
-    const entries: ArchiveEntry[] = /\.7z$/i.test(file.name)
-      ? await readSevenZipDirectory(read, entity.size)
-      : await readCentralDirectory(
-          read,
-          entity.size,
-          nameDecoder(c.req.query('text_encoding') ?? undefined),
-        );
+    const source: ArchiveSource = {
+      read,
+      size: entity.size,
+      // gzip 家族必须顺序解压，拿不到整段就没法解析
+      openFull: async () => {
+        if (encMeta) {
+          const plain = await ensurePlain();
+          return new Blob([plain as BlobPart]).stream() as ReadableStream<Uint8Array>;
+        }
+        const full = await driver.get(entity.source, null);
+        if (!full?.body) throw new ZipIOError('Failed to read archive');
+        return full.body as ReadableStream<Uint8Array>;
+      },
+    };
+
+    // 按扩展名分派：zip / 7z / rar / tar / tar.gz / gz 各有解析器，
+    // 其余（bz2、xz）明确报「不支持」，别落到 ZIP 解析器上去报乱码错误。
+    const fmt = detectArchiveFormat(file.name);
+    const entries: ArchiveEntry[] = await listArchive(fmt, source, {
+      displayName: file.name,
+      decodeName: nameDecoder(c.req.query('text_encoding') ?? undefined),
+    });
 
     return ok(c, {
       files: entries.map((e) => ({
-        name: e.name,
+        // 目录名统一去掉尾斜杠：ZIP 存 `dir/`、7z 存 `dir`，前端列表要一致
+        name: e.isDir ? e.name.replace(/\/+$/, '') : e.name,
         size: e.size,
         updated_at: e.mtime.toISOString(),
         is_directory: e.isDir,

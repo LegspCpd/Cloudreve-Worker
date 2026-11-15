@@ -31,7 +31,24 @@ import {
   safeEntryPath,
   ZipIOError,
   type RangeReader,
+  type ZipEntry as ZipReadEntry,
 } from '../lib/zipread';
+import {
+  detectArchiveFormat,
+  canExtractFormat,
+  unsupportedMessage,
+  listArchive,
+  gunzip,
+  type ArchiveEntry,
+  type ArchiveSource,
+} from '../lib/archive';
+import {
+  parseTar,
+  readTarEntry,
+  rangeByteSource,
+  streamByteSource,
+  walkTar,
+} from '../lib/tar';
 import { URI } from './uri';
 import { dispatchRemoteDownload, markDispatched } from './nodeTasks';
 import { assertSafeRemoteUrl, safeFetch, UnsafeRemoteUrlError } from '../lib/ssrf';
@@ -391,13 +408,12 @@ export class WorkflowService {
       const srcUri = URI.parse(args.src[0]!);
       const file = await this.fs.mustResolve(srcUri);
       if (file.type === FileType.Folder) throw Err.param('Cannot extract a folder');
-      // 7z 只做了文件表解析（浏览），完整解压要 BCJ/PPMd 等一整套解码器，
-      // 边缘包体放不下。这里明确报出来，别让用户去猜「不是 zip」。
-      if (/\.7z$/i.test(file.name)) {
-        throw new AppError(
-          CodeUnsupportedArchiveType,
-          'Extracting 7z archives is not supported; download it and extract locally',
-        );
+      // 能开放「解压」菜单的格式（前端 Wte 列表）在这里逐一对表：
+      // 7z / rar 只做了文件表解析（浏览），数据区解码器搬不进边缘包体；
+      // bz2 / xz 没有可用的解压实现。都明确报出来，别让用户去猜。
+      const fmt = detectArchiveFormat(file.name);
+      if (!canExtractFormat(fmt)) {
+        throw new AppError(CodeUnsupportedArchiveType, unsupportedMessage(fmt));
       }
       if (!file.primary_entity) {
         throw new AppError(CodeFeatureNotEnabled, `File "${file.name}" has no entity`);
@@ -419,44 +435,42 @@ export class WorkflowService {
 
       const driver = this.ctx.driverFor(policy);
       let plainCache: Uint8Array<ArrayBuffer> | null = null;
+      // 加密包要先把整段密文解成明文才能随机读，解密一次后复用
+      const ensurePlain = async (): Promise<Uint8Array<ArrayBuffer>> => {
+        if (plainCache) return plainCache;
+        const masterKeys = await deriveFileMasterKeys(this.ctx.env, this.ctx.settings.secretKey);
+        const { key, iv } = await importCtrKey(
+          JSON.parse(entity.enc_meta!) as EncryptMetadata,
+          'decrypt',
+          masterKeys,
+        );
+        const full = await driver.get(entity.source, null);
+        if (!full?.body) throw new ZipIOError('Failed to read encrypted archive');
+        plainCache = await decryptFull(full.body as ReadableStream<Uint8Array>, key, iv);
+        return plainCache;
+      };
+
       const read: RangeReader = async (start, end) => {
-        if (entity.enc_meta) {
-          if (!plainCache) {
-            const masterKeys = await deriveFileMasterKeys(this.ctx.env, this.ctx.settings.secretKey);
-            const { key, iv } = await importCtrKey(
-              JSON.parse(entity.enc_meta) as EncryptMetadata,
-              'decrypt',
-              masterKeys,
-            );
-            const full = await driver.get(entity.source, null);
-            if (!full?.body) throw new ZipIOError('Failed to read encrypted archive');
-            plainCache = await decryptFull(full.body as ReadableStream<Uint8Array>, key, iv);
-          }
-          return plainCache.slice(start, end + 1);
-        }
+        if (entity.enc_meta) return (await ensurePlain()).slice(start, end + 1);
         const content = await driver.get(entity.source, `bytes=${start}-${end}`);
         if (!content) throw new ZipIOError(`Failed to read range ${start}-${end}`);
         return drain(content.body as ReadableStream<Uint8Array>);
       };
 
-      const entries = await readCentralDirectory(read, entity.size, nameDecoder(args.encoding));
-
-      const fileEntries = entries.filter((e) => !e.isDir);
-      const dirEntries = entries.filter((e) => e.isDir);
-      const total = fileEntries.length + dirEntries.length;
-      if (total > MAX_WORKFLOW_ENTRIES) {
-        throw new AppError(
-          CodeFeatureNotEnabled,
-          `Archive has ${total} entries, which exceeds the ${MAX_WORKFLOW_ENTRIES} entry limit`,
-        );
-      }
-      const totalBytes = fileEntries.reduce((n, e) => n + e.size, 0);
-      if (totalBytes > MAX_WORKFLOW_BYTES) {
-        throw new AppError(
-          CodeFeatureNotEnabled,
-          `Archive expands to ${totalBytes} bytes, which exceeds the ${MAX_WORKFLOW_BYTES} byte limit`,
-        );
-      }
+      const source: ArchiveSource = {
+        read,
+        size: entity.size,
+        // gzip 只能顺序解压，拿不到整段就没法解析；加密文件走明文缓存
+        openFull: async () => {
+          if (entity.enc_meta) {
+            const plain = await ensurePlain();
+            return new Blob([plain as BlobPart]).stream() as ReadableStream<Uint8Array>;
+          }
+          const full = await driver.get(entity.source, null);
+          if (!full?.body) throw new ZipIOError('Failed to read archive');
+          return full.body as ReadableStream<Uint8Array>;
+        },
+      };
 
       const dstUri = URI.parse(args.dst);
       const madeDirs = new Set<string>();
@@ -470,31 +484,135 @@ export class WorkflowService {
         }
       };
 
-      // 目录条目先建，保证空目录也不丢
-      for (const entry of dirEntries) {
-        const segs = safeEntryPath(entry.name);
-        if (!segs) continue; // 非法路径（穿越/绝对路径），跳过
-        await ensureDir(segs);
-      }
-
       let extracted = 0;
       let skipped = 0;
-      for (const entry of fileEntries) {
-        const segs = safeEntryPath(entry.name);
-        if (!segs) {
-          skipped += 1;
-          continue;
-        }
-        if (entry.size > MAX_EXTRACT_ENTRY_BYTES) {
+      let total = 0;
+
+      /** 目录先建，再逐条落盘。zip / tar 共用（tar 的条目也能按偏移随机读）。 */
+      const extractEntries = async (
+        entries: ArchiveEntry[],
+        load: (entry: ArchiveEntry) => Promise<Uint8Array>,
+      ): Promise<void> => {
+        total = entries.length;
+        if (total > MAX_WORKFLOW_ENTRIES) {
           throw new AppError(
             CodeFeatureNotEnabled,
-            `Entry "${entry.name}" is ${entry.size} bytes, exceeding the ${MAX_EXTRACT_ENTRY_BYTES} byte per-entry limit`,
+            `Archive has ${total} entries, which exceeds the ${MAX_WORKFLOW_ENTRIES} entry limit`,
           );
         }
-        await ensureDir(segs.slice(0, -1));
-        const data = entry.size === 0 ? new Uint8Array(0) : await readEntry(read, entry);
-        await this.writeToUri(dstUri.join(...segs).toString(), entry.size, bytesToStream(data));
-        extracted += 1;
+        const totalBytes = entries.reduce((n, e) => n + (e.isDir ? 0 : e.size), 0);
+        if (totalBytes > MAX_WORKFLOW_BYTES) {
+          throw new AppError(
+            CodeFeatureNotEnabled,
+            `Archive expands to ${totalBytes} bytes, which exceeds the ${MAX_WORKFLOW_BYTES} byte limit`,
+          );
+        }
+
+        // 目录条目先建，保证空目录也不丢
+        for (const entry of entries) {
+          if (!entry.isDir) continue;
+          const segs = safeEntryPath(entry.name);
+          if (!segs) continue; // 非法路径（穿越/绝对路径），跳过
+          await ensureDir(segs);
+        }
+
+        for (const entry of entries) {
+          if (entry.isDir) continue;
+          const segs = safeEntryPath(entry.name);
+          if (!segs) {
+            skipped += 1;
+            continue;
+          }
+          if (entry.size > MAX_EXTRACT_ENTRY_BYTES) {
+            throw new AppError(
+              CodeFeatureNotEnabled,
+              `Entry "${entry.name}" is ${entry.size} bytes, exceeding the ${MAX_EXTRACT_ENTRY_BYTES} byte per-entry limit`,
+            );
+          }
+          await ensureDir(segs.slice(0, -1));
+          const data = entry.size === 0 ? new Uint8Array(0) : await load(entry);
+          await this.writeToUri(dstUri.join(...segs).toString(), entry.size, bytesToStream(data));
+          extracted += 1;
+        }
+      };
+
+      if (fmt === 'zip') {
+        const entries = await readCentralDirectory(read, entity.size, nameDecoder(args.encoding));
+        await extractEntries(entries, (e) => readEntry(read, e as ZipReadEntry));
+      } else if (fmt === 'tar') {
+        const entries = await parseTar(rangeByteSource(read, entity.size));
+        await extractEntries(entries, (e) => readTarEntry(read, e as Parameters<typeof readTarEntry>[1]));
+      } else {
+        // gzip 家族（.tar.gz / .tgz / .gz）：gzip 不能随机访问，分两遍。
+        // 第一遍流式读文件表（只占几百字节的窗口），校验条目数与展开大小；
+        // 第二遍重新解压，条目数据边读边写，内存里只有 64KB 的块。
+        const entries = await listArchive(fmt, source, { displayName: file.name });
+        total = entries.length;
+        if (total > MAX_WORKFLOW_ENTRIES) {
+          throw new AppError(
+            CodeFeatureNotEnabled,
+            `Archive has ${total} entries, which exceeds the ${MAX_WORKFLOW_ENTRIES} entry limit`,
+          );
+        }
+        const totalBytes = entries.reduce((n, e) => n + (e.isDir ? 0 : e.size), 0);
+        if (totalBytes > MAX_WORKFLOW_BYTES) {
+          throw new AppError(
+            CodeFeatureNotEnabled,
+            `Archive expands to ${totalBytes} bytes, which exceeds the ${MAX_WORKFLOW_BYTES} byte limit`,
+          );
+        }
+
+        if (fmt === 'gz') {
+          // 单文件：解压流就是文件内容，直接落盘
+          const entry = entries[0]!;
+          if (entry.size > MAX_EXTRACT_ENTRY_BYTES) {
+            throw new AppError(
+              CodeFeatureNotEnabled,
+              `Entry "${entry.name}" is ${entry.size} bytes, exceeding the ${MAX_EXTRACT_ENTRY_BYTES} byte per-entry limit`,
+            );
+          }
+          const segs = safeEntryPath(entry.name) ?? safeEntryPath(file.name.replace(/\.gz$/i, ''));
+          if (!segs) throw Err.param('Archive entry has an unsafe path');
+          await ensureDir(segs.slice(0, -1));
+          await this.writeToUri(
+            dstUri.join(...segs).toString(),
+            entry.size,
+            gunzip(await source.openFull()),
+          );
+          extracted = 1;
+        } else {
+          for (const entry of entries) {
+            if (!entry.isDir) continue;
+            const segs = safeEntryPath(entry.name);
+            if (segs) await ensureDir(segs);
+          }
+          const walker = streamByteSource(gunzip(await source.openFull()));
+          await walkTar(walker, async (entry, data) => {
+            if (entry.isDir) {
+              const segs = safeEntryPath(entry.name);
+              if (segs) await ensureDir(segs);
+              return;
+            }
+            const segs = safeEntryPath(entry.name);
+            if (!segs) {
+              skipped += 1;
+              return; // 没读的数据由 walkTar 补跳
+            }
+            if (entry.size > MAX_EXTRACT_ENTRY_BYTES) {
+              throw new AppError(
+                CodeFeatureNotEnabled,
+                `Entry "${entry.name}" is ${entry.size} bytes, exceeding the ${MAX_EXTRACT_ENTRY_BYTES} byte per-entry limit`,
+              );
+            }
+            await ensureDir(segs.slice(0, -1));
+            await this.writeToUri(
+              dstUri.join(...segs).toString(),
+              entry.size,
+              entry.size === 0 ? bytesToStream(new Uint8Array(0)) : data.stream(),
+            );
+            extracted += 1;
+          });
+        }
       }
 
       await this.ctx.tasks.updateStatus(task.id, 'completed', {

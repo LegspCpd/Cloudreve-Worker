@@ -45,7 +45,8 @@
     "test:sql-adapter": "node scripts/test-sql-adapter.mjs",
     "test:sql-semantics": "node scripts/test-sql-semantics.mjs",
     "test:lib": "node scripts/test-lib.mjs",
-    "test:7z": "node scripts/test-7z.mjs"
+    "test:7z": "node scripts/test-7z.mjs",
+    "test:archive": "node scripts/test-archive.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
