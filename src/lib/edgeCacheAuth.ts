@@ -52,8 +52,12 @@ const EPOCH_MEMO_TTL_MS = 2000;
  * 进程内 memo 几乎不命中 → 每个首页 GET 都打一次远端 KV。这里加一层同 colo
  * 跨 isolate 的 Cache API，命中 1~3ms。写操作 bump 时同步删本 colo 的键，
  * 保证同 colo 下一次读立刻失效；跨 colo 靠 KV 传播 + TTL 兜底。
+ *
+ * TTL 可以放长：epoch 只是「缓存键的一部分」，即使别的 colo 拿着旧 epoch，
+ * 它缓存的那条响应本身也有 max-age（`/me` 30s、`GET /file` 8s），
+ * 所以真正的陈旧上限由那两处决定，跟这里的 TTL 无关。
  */
-const EPOCH_COLO_TTL_S = 60;
+const EPOCH_COLO_TTL_S = 300;
 
 function deployKey(env: Env): string {
   // 用 JWT 密钥前缀区分不同部署，避免跨部署串缓存。

@@ -41,11 +41,14 @@ const L1_TTL_MS = 3_000;
  * 3s 内存窗口基本不命中 → 每请求都打一次远端 KV（180~560ms）。这一层与
  * 站点设置同款（见 settings/provider.ts）：同 colo 跨 isolate 共享，命中
  * 1~3ms，把「新 isolate 的第一个访客」从一次 KV 往返降到内存级。
- * 写路径失效时同步删本 colo 的键，跨 colo 靠 TTL 兜底（与 KV 传播同量级）。
+ * 写路径失效时同步删本 colo 的键，跨 colo 靠 TTL 兜底。
+ *
+ * 取 5 分钟：这是「用户行」而不是设置，封禁/改组这类改动要尽快跨 colo 生效，
+ * 不能像设置那样放到半小时。本 colo 的失效是即时的。
  */
-const COLO_TTL_S = 60;
+const COLO_TTL_S = 300;
 /** L2（KV）存活时间。改动最晚这么多秒后自动可见。 */
-const L2_TTL_S = 300;
+const L2_TTL_S = 1800;
 /** L1 条数上限，防止长驻 isolate 内存无界增长（Workers 有 128MB 限制）。 */
 const L1_MAX = 200;
 

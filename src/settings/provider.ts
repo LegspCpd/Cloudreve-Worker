@@ -15,16 +15,30 @@ import { kvFor } from '../lib/kvRouter';
 import { coloCacheDelete, coloCacheGetJson, coloCachePutJson } from '../lib/coloCache';
 
 const KV_CACHE_KEY = 'settings:all:v1';
-const KV_CACHE_TTL = 300;
+/**
+ * KV 副本的存活时间。
+ *
+ * 站点的真实访问是「稀疏」的：隔几分钟来一次，而这恰好是 KV 副本和 colo
+ * 副本一起过期、Neon 计算节点也已休眠的时刻 —— 于是每次「重新打开站点」
+ * 的第一个请求都要付一次 DB 往返（实测 settings 段 900ms 量级）。
+ *
+ * 设置是「读极多、写极少」的数据，把 TTL 拉长到小时级，跨 colo 的一致性
+ * 由 `invalidateSettings()` 的 KV 删除保证（KV 是全局的，删了所有 colo 都
+ * 读不到），所以这里拉长不会让「改了设置看不到」变得更糟。
+ */
+const KV_CACHE_TTL = 3600;
 /** Colo 级（Cache API）副本的物理 TTL / 逻辑新鲜期（秒）。 */
 const COLO_CACHE_KEY = 'settings:all:v1';
-const COLO_CACHE_TTL_S = 600;
+const COLO_CACHE_TTL_S = 3600;
 /**
- * 逻辑新鲜期。取 60s 与 KV 副本的 TTL 对齐 —— 也就是「跨 colo 的最坏陈旧
- * 时间不会比现在更差」，同时把同一 colo 内的冷 isolate 命中率拉到实用水平。
- * 本 colo 的失效是即时的（invalidateSettings 会删这个键）。
+ * 逻辑新鲜期。取 30 分钟：colo 副本是本地读（1~3ms），只有它能覆盖「空闲
+ * 一段时间后重新访问」这个最常见的场景。
+ *
+ * 代价是跨 colo 的最坏陈旧窗口。本 colo 的失效是即时的（invalidateSettings
+ * 会删这个键）；别的 colo 删不到，只能等过期。设置改动是管理员低频操作，
+ * 且通常就在本 colo 完成，这个窗口实际影响很小。
  */
-const COLO_MAX_AGE_S = 300;
+const COLO_MAX_AGE_S = 1800;
 
 /**
  * isolate 级内存缓存。
