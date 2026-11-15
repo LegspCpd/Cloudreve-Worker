@@ -15,26 +15,52 @@
  *   - 本地头    0x04034b50
  */
 
-export interface ZipEntry {
-  /** 完整相对路径，目录以 `/` 结尾 */
+import { AppError, CodeIOFailed, CodeUnsupportedArchiveType } from './errors';
+
+/** 归档目录项的公共形状（zip / 7z 共用，浏览接口只依赖这四个字段）。 */
+export interface ArchiveEntry {
+  /** 完整相对路径 */
   name: string;
-  /** 原始文件名字节（供非 UTF-8 编码二次解码） */
-  nameBytes: Uint8Array;
-  isDir: boolean;
   /** 未压缩大小 */
   size: number;
+  isDir: boolean;
+  mtime: Date;
+}
+
+export interface ZipEntry extends ArchiveEntry {
+  /** 原始文件名字节（供非 UTF-8 编码二次解码） */
+  nameBytes: Uint8Array;
   compressedSize: number;
   /** 0=store 8=deflate */
   method: number;
   crc32: number;
   localHeaderOffset: number;
-  /** DOS 时间转 UTC */
-  mtime: Date;
   /** 通用标志位（bit0 加密，bit11 UTF-8 名） */
   flags: number;
 }
 
-export class ZipError extends Error {}
+/**
+ * 归档解析失败。
+ *
+ * 必须带 `CodeUnsupportedArchiveType` 交给上层：以前它是裸 `Error`，
+ * `fail()` 把所有非 AppError 的异常一律当 `CodeDBError`，于是「这文件不是
+ * zip」在前端渲染成「数据库操作失败 (End of central directory not found...)」
+ * —— 用户看到的既不是真实原因，也误导排查方向。
+ */
+export class ZipError extends AppError {
+  constructor(msg: string, raw?: unknown) {
+    super(CodeUnsupportedArchiveType, msg, raw);
+    this.name = 'ZipError';
+  }
+}
+
+/** 读取归档字节时出的错（Range 读失败、存储后端异常）。走 50004 而不是格式错误。 */
+export class ZipIOError extends AppError {
+  constructor(msg: string, raw?: unknown) {
+    super(CodeIOFailed, msg, raw);
+    this.name = 'ZipIOError';
+  }
+}
 
 /** 分段读取器：闭区间 [start, end] 字节。 */
 export type RangeReader = (start: number, end: number) => Promise<Uint8Array>;

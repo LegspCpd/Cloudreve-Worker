@@ -23,13 +23,13 @@ import { UploadService } from './upload';
 import type { EncryptMetadata, EntityRow, FileRow, TaskRow } from '../db/types';
 import { EntityType, FileType } from '../lib/boolset';
 import { decryptFull, decryptStream, importCtrKey, deriveFileMasterKeys } from '../lib/encCrypto';
-import { AppError, CodeFeatureNotEnabled, Err } from '../lib/errors';
+import { AppError, CodeFeatureNotEnabled, CodeUnsupportedArchiveType, Err } from '../lib/errors';
 import { createZipStream, type ZipEntry } from '../lib/zip';
 import {
   readCentralDirectory,
   readEntry,
   safeEntryPath,
-  ZipError,
+  ZipIOError,
   type RangeReader,
 } from '../lib/zipread';
 import { URI } from './uri';
@@ -391,6 +391,14 @@ export class WorkflowService {
       const srcUri = URI.parse(args.src[0]!);
       const file = await this.fs.mustResolve(srcUri);
       if (file.type === FileType.Folder) throw Err.param('Cannot extract a folder');
+      // 7z 只做了文件表解析（浏览），完整解压要 BCJ/PPMd 等一整套解码器，
+      // 边缘包体放不下。这里明确报出来，别让用户去猜「不是 zip」。
+      if (/\.7z$/i.test(file.name)) {
+        throw new AppError(
+          CodeUnsupportedArchiveType,
+          'Extracting 7z archives is not supported; download it and extract locally',
+        );
+      }
       if (!file.primary_entity) {
         throw new AppError(CodeFeatureNotEnabled, `File "${file.name}" has no entity`);
       }
@@ -421,13 +429,13 @@ export class WorkflowService {
               masterKeys,
             );
             const full = await driver.get(entity.source, null);
-            if (!full?.body) throw new ZipError('Failed to read encrypted archive');
+            if (!full?.body) throw new ZipIOError('Failed to read encrypted archive');
             plainCache = await decryptFull(full.body as ReadableStream<Uint8Array>, key, iv);
           }
           return plainCache.slice(start, end + 1);
         }
         const content = await driver.get(entity.source, `bytes=${start}-${end}`);
-        if (!content) throw new ZipError(`Failed to read range ${start}-${end}`);
+        if (!content) throw new ZipIOError(`Failed to read range ${start}-${end}`);
         return drain(content.body as ReadableStream<Uint8Array>);
       };
 

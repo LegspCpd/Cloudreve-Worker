@@ -43,9 +43,14 @@ import { DownloadService } from '../services/download';
 import { UserService } from '../services/user';
 import { subscribe, type FsEvent } from '../services/events';
 import { WorkflowService } from '../services/workflow';
-import { readCentralDirectory, type RangeReader } from '../lib/zipread';
+import {
+  readCentralDirectory,
+  ZipIOError,
+  type ArchiveEntry,
+  type RangeReader,
+} from '../lib/zipread';
+import { readSevenZipDirectory } from '../lib/sevenzip';
 import { createZipStream } from '../lib/zip';
-import { ZipError } from '../lib/zipread';
 import { drain, nameDecoder } from '../services/workflow';
 import { URI } from '../services/uri';
 import { FileType } from '../lib/boolset';
@@ -1015,7 +1020,7 @@ fileRoutes.get('/archive', async (c) => {
       if (encMeta) {
         if (!plainCache) {
           const full = await driver.get(entity.source, null);
-          if (!full?.body) throw new ZipError('Failed to read encrypted archive');
+          if (!full?.body) throw new ZipIOError('Failed to read encrypted archive');
           const masterKeys = await deriveFileMasterKeys(ctx.env, ctx.settings.secretKey);
           const { key, iv } = await importCtrKey(encMeta, 'decrypt', masterKeys);
           plainCache = await decryptFull(full.body as ReadableStream<Uint8Array>, key, iv);
@@ -1023,15 +1028,20 @@ fileRoutes.get('/archive', async (c) => {
         return plainCache.slice(start, end + 1);
       }
       const content = await driver.get(entity.source, `bytes=${start}-${end}`);
-      if (!content) throw new ZipError(`Failed to read range ${start}-${end}`);
+      if (!content) throw new ZipIOError(`Failed to read range ${start}-${end}`);
       return drain(content.body as ReadableStream<Uint8Array>);
     };
 
-    const entries = await readCentralDirectory(
-      read,
-      entity.size,
-      nameDecoder(c.req.query('text_encoding') ?? undefined),
-    );
+    // 7z 的文件表本身是压缩的（kEncodedHeader），必须走独立解析器。
+    // 其它扩展名照旧按 ZIP 解析 —— .docx / .jar / .cbz 这类其实也是 zip，
+    // 不能按扩展名一刀切。
+    const entries: ArchiveEntry[] = /\.7z$/i.test(file.name)
+      ? await readSevenZipDirectory(read, entity.size)
+      : await readCentralDirectory(
+          read,
+          entity.size,
+          nameDecoder(c.req.query('text_encoding') ?? undefined),
+        );
 
     return ok(c, {
       files: entries.map((e) => ({
