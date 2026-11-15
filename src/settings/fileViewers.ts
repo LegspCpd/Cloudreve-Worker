@@ -134,7 +134,7 @@ export const DEFAULT_FILE_VIEWERS = JSON.stringify([
         id: 'archive',
         type: 'builtin',
         display_name: 'fileManager.archivePreview',
-        exts: ['zip', '7z'],
+        exts: ['zip', '7z', 'rar', 'tar', 'gz', 'tgz'],
         required_group_permission: [5],
       },
     ],
@@ -143,6 +143,35 @@ export const DEFAULT_FILE_VIEWERS = JSON.stringify([
 
 /** 与 DEFAULT_FILE_VIEWERS 同源的数组形态（兜底时直接返回，免重复 stringify+parse）。 */
 const DEFAULT_FILE_VIEWERS_ARRAY: unknown[] = JSON.parse(DEFAULT_FILE_VIEWERS);
+
+/**
+ * 「压缩包浏览」实际支持的扩展名。
+ *
+ * 前端按 `fileExtension(name)`（最后一个点之后）匹配查看器，所以 `.tar.gz`
+ * 命中的是 `gz`，不需要也不可能列出 `tar.gz`。
+ *
+ * 存量部署的 `settings.file_viewers` 是播种时写进库的旧值（只有 zip/7z），
+ * 改默认值不会影响它们，而管理员自定义的配置又不该被迁移覆盖 —— 因此在
+ * 读取层做并集：内置 archive 查看器的扩展名永远包含这一组。代价是管理员
+ * 无法「去掉某一种归档的预览入口」，对内置查看器来说可以接受。
+ */
+const ARCHIVE_VIEWER_EXTS = ['zip', '7z', 'rar', 'tar', 'gz', 'tgz'];
+
+function withArchiveExts(groups: unknown[]): unknown[] {
+  for (const g of groups) {
+    if (g === null || typeof g !== 'object') continue;
+    const viewers = (g as { viewers?: unknown }).viewers;
+    if (!Array.isArray(viewers)) continue;
+    for (const v of viewers) {
+      if (v === null || typeof v !== 'object') continue;
+      const viewer = v as { id?: unknown; type?: unknown; exts?: unknown };
+      if (viewer.id !== 'archive' || viewer.type !== 'builtin') continue;
+      const exts = Array.isArray(viewer.exts) ? viewer.exts.filter((e) => typeof e === 'string') : [];
+      viewer.exts = [...new Set([...exts, ...ARCHIVE_VIEWER_EXTS])];
+    }
+  }
+  return groups;
+}
 
 /**
  * 解析 settings 里存的 file_viewers 值，返回 ViewerGroup[]。
@@ -166,10 +195,10 @@ export function parseFileViewers(raw: string | null | undefined): unknown[] {
             Array.isArray((g as { viewers?: unknown }).viewers) &&
             (g as { viewers: unknown[] }).viewers.length > 0,
         );
-      if (hasViewers) return parsed as unknown[];
+      if (hasViewers) return withArchiveExts(parsed as unknown[]);
     } catch {
       /* 坏 JSON → 走默认集 */
     }
   }
-  return DEFAULT_FILE_VIEWERS_ARRAY;
+  return withArchiveExts(DEFAULT_FILE_VIEWERS_ARRAY);
 }

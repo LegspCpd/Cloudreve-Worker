@@ -19,6 +19,36 @@ const RAR5_SIG = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00];
 const MAX_ENTRIES = 100_000;
 /** 单个头理论上可以带很长的名字；给个上限防止构造畸形文件拉爆内存。 */
 const MAX_HEADER = 64 * 1024;
+/**
+ * Range 读取的滑动窗口。
+ *
+ * 每读一次 Range，存储驱动往往还要先查一次对象元信息（OneDrive 是 Graph
+ * 的 fileInfo），所以「一个头一次读」在百来个条目的包上就是几百次请求，
+ * 线上直接撞限流（实测 RAR 报上游不可用）。窗口把相邻头合并成一次读，
+ * 小包通常一两次就能解完。
+ */
+const READ_WINDOW = 64 * 1024;
+
+/** 带窗口缓存的 Range 读取器。顺序解析头部时几乎不重复发请求。 */
+function windowedReader(
+  read: RangeReader,
+  fileSize: number,
+): RangeReader {
+  let start = 0;
+  let buf: Uint8Array = new Uint8Array(0);
+  return async (from, to) => {
+    if (from >= start && to < start + buf.length) {
+      return buf.subarray(from - start, to - start + 1);
+    }
+    const end = Math.min(fileSize, Math.max(to + 1, from + READ_WINDOW));
+    const chunk = await read(from, end - 1);
+    buf = chunk;
+    start = from;
+    const want = Math.min(to - from + 1, chunk.length);
+    if (want <= 0) return chunk;
+    return chunk.subarray(0, want);
+  };
+}
 
 function u16(b: Uint8Array, off: number): number {
   return b[off]! | (b[off + 1]! << 8);
@@ -277,10 +307,11 @@ async function readRar5(read: RangeReader, fileSize: number): Promise<ArchiveEnt
 
 /** 读 RAR 文件表。数据区一律跳过，不做解压。 */
 export async function readRarDirectory(
-  read: RangeReader,
+  readIn: RangeReader,
   fileSize: number,
 ): Promise<ArchiveEntry[]> {
   if (fileSize < 8) throw new ZipError('File is too small to be a rar archive');
+  const read = windowedReader(readIn, fileSize);
   const head = await read(0, Math.min(fileSize, 8) - 1);
 
   const isRar4 = RAR4_SIG.every((b, i) => head[i] === b);
