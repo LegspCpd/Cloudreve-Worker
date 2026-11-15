@@ -1531,9 +1531,8 @@ export class FileRepo {
 
   async deleteMany(ids: number[]): Promise<void> {
     if (ids.length === 0) return;
-    for (const id of ids) {
-      await this.sql`DELETE FROM files WHERE id = ${id}`;
-    }
+    // 一条语句删整批（原逐条循环在清空回收站时是 N 次往返）。
+    await this.sql`DELETE FROM files WHERE id = ANY(${ids}::int[])`;
   }
 
   /**
@@ -1699,28 +1698,30 @@ export class EntityRepo {
    * 复用，就把别人的数据删了。带上条件后第二次不匹配、返回空。
    */
   async release(ids: number[]): Promise<EntityRow[]> {
-    const toDelete: EntityRow[] = [];
-    for (const id of ids) {
-      const rows = (await this.sql`
-        UPDATE entities
-        SET reference_count = reference_count - 1, updated_at = now()
-        WHERE id = ${id} AND reference_count > 0
-        RETURNING *
-      `) as Record<string, unknown>[];
-      const row = rows[0];
-      if (row && toNum(row.reference_count) <= 0) {
-        toDelete.push(normalizeEntity(row));
-      }
-    }
-    return toDelete;
+    if (ids.length === 0) return [];
+    // 同一实体被多文件引用时 ids 里会出现多次，必须按出现次数减引用计数。
+    // unnest + GROUP BY 把重复 id 压成 (id, n) 一次 UPDATE 减 n；原来的
+    // 逐条循环在清空回收站时是 N 次往返（N=文件数×版本数），是最大的一处
+    // 串行开销。RETURNING 后只留引用归零的行，语义与逐条版完全一致。
+    const rows = (await this.sql`
+      UPDATE entities e
+      SET reference_count = GREATEST(0, e.reference_count - c.n), updated_at = now()
+      FROM (
+        SELECT id, count(*)::int AS n
+        FROM unnest(${ids}::int[]) AS id
+        GROUP BY id
+      ) c
+      WHERE e.id = c.id AND e.reference_count > 0
+      RETURNING e.*
+    `) as Record<string, unknown>[];
+    return rows.filter((r) => toNum(r.reference_count) <= 0).map(normalizeEntity);
   }
 
-  /** 硬删除实体记录。 */
+  /** 硬删除实体记录。批量版：无论多少实体都只 2 次往返（原逐条是 2N 次）。 */
   async hardDelete(ids: number[]): Promise<void> {
-    for (const id of ids) {
-      await this.sql`DELETE FROM file_entities WHERE entity_id = ${id}`;
-      await this.sql`DELETE FROM entities WHERE id = ${id}`;
-    }
+    if (ids.length === 0) return;
+    await this.sql`DELETE FROM file_entities WHERE entity_id = ANY(${ids}::int[])`;
+    await this.sql`DELETE FROM entities WHERE id = ANY(${ids}::int[])`;
   }
 
   async listByFile(fileId: number): Promise<EntityRow[]> {
@@ -1729,6 +1730,22 @@ export class EntityRepo {
       JOIN file_entities fe ON fe.entity_id = e.id
       WHERE fe.file_id = ${fileId} AND e.deleted_at IS NULL
       ORDER BY e.created_at DESC
+    `) as Record<string, unknown>[];
+    return rows.map(normalizeEntity);
+  }
+
+  /**
+   * 批量列出多个文件引用的实体（清空回收站用）。1 次往返取代 N 次
+   * `listByFile`。⚠️ **不能 DISTINCT**：同一实体被多个文件引用时 join 会产出
+   * 多行，这个重复次数正是 `release` 要扣的引用计数。回收站里目录的子文件
+   * 也在 fileIds 里，故一次拿全整棵子树的实体。
+   */
+  async listByFiles(fileIds: number[]): Promise<EntityRow[]> {
+    if (fileIds.length === 0) return [];
+    const rows = (await this.sql`
+      SELECT e.* FROM entities e
+      JOIN file_entities fe ON fe.entity_id = e.id
+      WHERE fe.file_id = ANY(${fileIds}::int[]) AND e.deleted_at IS NULL
     `) as Record<string, unknown>[];
     return rows.map(normalizeEntity);
   }
@@ -2017,6 +2034,12 @@ export class MetadataRepo {
 
   async removeAllForFile(fileId: number): Promise<void> {
     await this.sql`DELETE FROM metadata WHERE file_id = ${fileId}`;
+  }
+
+  /** 批量删元数据（清空回收站用）：1 次往返取代 N 次。 */
+  async removeAllForFiles(fileIds: number[]): Promise<void> {
+    if (fileIds.length === 0) return;
+    await this.sql`DELETE FROM metadata WHERE file_id = ANY(${fileIds}::int[])`;
   }
 
   /**

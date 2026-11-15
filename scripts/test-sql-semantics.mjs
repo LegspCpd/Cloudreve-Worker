@@ -315,6 +315,20 @@ try {
       .reference_count,
   );
   check('计数没有变成 -1', rc === 0, String(rc));
+  // 批量释放：同一实体被多个文件引用时 ids 里出现多次，一次 release 要按
+  // 出现次数扣减。清空回收站的 purgeMany 就走这条（原实现是逐条 UPDATE）。
+  await entitiesRepo.retain([ent.id]);
+  await entitiesRepo.retain([ent.id]);
+  await entitiesRepo.retain([ent.id]); // 计数 3
+  garbage = await entitiesRepo.release([ent.id, ent.id]); // 一次扣 2 → 剩 1
+  check('批量按重复次数扣 2 次后仍不算垃圾', garbage.length === 0);
+  garbage = await entitiesRepo.release([ent.id]); // 再扣 1 → 归零
+  check('批量释放到零进入待删列表', garbage.length === 1);
+  rc = Number(
+    (await db.query(`SELECT reference_count FROM entities WHERE id = $1`, [ent.id])).rows[0]
+      .reference_count,
+  );
+  check('批量释放不会扣成负数', rc === 0, String(rc));
 
   // -------------------------------------------------------------------------
   // [12] 迁移可重放（幂等）

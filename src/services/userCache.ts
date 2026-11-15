@@ -30,15 +30,27 @@
 import type { Env } from '../env';
 import type { UserWithGroup } from '../db/types';
 import { kvFor } from '../lib/kvRouter';
+import { coloCacheDelete, coloCacheGetJson, coloCachePutJson } from '../lib/coloCache';
 import { UserRepo, reviveUserWithGroup } from '../db/repo';
 import type { Sql } from '../db';
 
 /** L1 内存存活时间。短 TTL：只吸收同一 isolate 内的突发并发。 */
 const L1_TTL_MS = 3_000;
+/**
+ * L1.5（colo Cache API）新鲜期。低流量站点几乎每请求都是新 isolate，L1 的
+ * 3s 内存窗口基本不命中 → 每请求都打一次远端 KV（180~560ms）。这一层与
+ * 站点设置同款（见 settings/provider.ts）：同 colo 跨 isolate 共享，命中
+ * 1~3ms，把「新 isolate 的第一个访客」从一次 KV 往返降到内存级。
+ * 写路径失效时同步删本 colo 的键，跨 colo 靠 TTL 兜底（与 KV 传播同量级）。
+ */
+const COLO_TTL_S = 60;
 /** L2（KV）存活时间。改动最晚这么多秒后自动可见。 */
 const L2_TTL_S = 300;
 /** L1 条数上限，防止长驻 isolate 内存无界增长（Workers 有 128MB 限制）。 */
 const L1_MAX = 200;
+
+/** colo 缓存键。与 KV 键分开命名空间，避免两层的副本互相污染。 */
+const COLO_KEY = (id: number) => `user:v2:${id}`;
 
 const USER_KEY = (id: number) => `user:v2:${id}`;
 
@@ -85,9 +97,22 @@ export async function getCachedUser(
   env: Env,
   sql: Sql,
   id: number,
+  waitUntil?: (p: Promise<unknown>) => void,
 ): Promise<UserWithGroup | null> {
   const hit = l1Get(id);
   if (hit) return hit;
+
+  // L1.5：同 colo 跨 isolate 的 Cache API。缓存的是 sanitize 后的副本（无
+  // 密码哈希），与 KV 同样经 reviveUserWithGroup 复原 Date / 权限位。
+  const coloHit = await coloCacheGetJson<Record<string, unknown>>(COLO_KEY(id), COLO_TTL_S);
+  if (coloHit) {
+    const user = reviveUserWithGroup(coloHit);
+    if (user) {
+      l1Set(id, user);
+      return user;
+    }
+    // 形状不对（旧版本键）：按未命中处理，走下面回源覆盖
+  }
 
   // L2：KV。失败不致命 —— 退化成直接查库即可。
   let kv: KVNamespace | null = null;
@@ -118,11 +143,20 @@ export async function getCachedUser(
   const user = await new UserRepo(sql).byIdWithGroup(id);
   if (!user) return null;
 
+  const safe = sanitizeUserForKv(user);
+  // 回填 colo（本地几毫秒）与 KV（远端）。KV 写不阻塞响应：与 settings 的
+  // refill 同款，能拿到 waitUntil 就挂后台；拿不到（测试/无 executionCtx）
+  // 才 await，保证写入不会因请求结束被取消。
+  void coloCachePutJson(COLO_KEY(id), safe, COLO_TTL_S);
   if (kv) {
     try {
-      await kv.put(USER_KEY(id), JSON.stringify(sanitizeUserForKv(user)), { expirationTtl: L2_TTL_S });
+      const put = kv
+        .put(USER_KEY(id), JSON.stringify(safe), { expirationTtl: L2_TTL_S })
+        .catch(() => undefined);
+      if (waitUntil) waitUntil(put);
+      else await put;
     } catch {
-      // 回填失败无所谓，下次请求会再试
+      // KV 绑定异常时静默跳过
     }
   }
   l1Set(id, user);
@@ -155,8 +189,10 @@ export async function invalidateUser(env: Env, id: number): Promise<void> {
 export async function warmUserCache(env: Env, user: UserWithGroup): Promise<void> {
   if (!user || !user.id) return;
   l1Set(user.id, user);
+  const safe = sanitizeUserForKv(user);
+  void coloCachePutJson(COLO_KEY(user.id), safe, COLO_TTL_S);
   try {
-    await kvFor(env, 'session').put(USER_KEY(user.id), JSON.stringify(sanitizeUserForKv(user)), {
+    await kvFor(env, 'session').put(USER_KEY(user.id), JSON.stringify(safe), {
       expirationTtl: L2_TTL_S,
     });
   } catch {
@@ -198,6 +234,9 @@ export function rememberEnv(env: Env): void {
 /** 清掉某用户的 L1 + L2 缓存。repo 写方法内部调用。 */
 export async function evictUserCache(id: number): Promise<void> {
   l1.delete(id);
+  // 本 colo 的副本必须同步删，否则改了容量/权限后同节点后续请求还能从
+  // colo 读到旧用户（最长 COLO_TTL_S）。其它 colo 靠 TTL 与 KV 传播兜底。
+  void coloCacheDelete(COLO_KEY(id));
   const env = currentEnv;
   if (!env) return;
   try {

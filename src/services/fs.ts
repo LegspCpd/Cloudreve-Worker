@@ -1580,35 +1580,60 @@ export class FileSystemService {
     }
   }
 
-  /** 彻底删除：解除实体引用，引用归零的实体连同物理对象一起删掉。 */
-  private async purge(file: FileRow): Promise<void> {
-    const ids = await this.ctx.files.collectDescendants([file.id]);
-    const entitiesToRelease: number[] = [];
+  /**
+   * 彻底删除一批顶层文件/目录：解除实体引用，引用归零的实体连同物理对象一起删掉。
+   *
+   * 对齐上游 `RecycleEntities`：先一次拿全所有后代和实体，再**按存储策略分组**
+   * 批量删物理对象（原版 `lo.GroupBy(policyID)` + `lo.Chunk(..., 100)`），
+   * 每个策略一条 `driver.delete(sources[])`，而不是一个实体一次跨区往返。
+   * 容量回冲也按用户合并 —— 原来每个实体一次 `addStorage`（其中还夹着一次
+   * 用户缓存失效的 KV 删除），清空回收站时这是最大的串行开销来源。
+   */
+  private async purgeMany(rootIds: number[]): Promise<void> {
+    if (rootIds.length === 0) return;
+    const ids = await this.ctx.files.collectDescendants(rootIds);
 
-    for (const id of ids) {
-      const entities = await this.ctx.entities.listByFile(id);
-      for (const e of entities) entitiesToRelease.push(e.id);
-      await this.ctx.metadata.removeAllForFile(id);
-    }
+    // 列表、元数据、引用释放全是批量语句：无论多少文件都各只 1 次往返。
+    const entities = await this.ctx.entities.listByFiles(ids);
+    await this.ctx.metadata.removeAllForFiles(ids);
+    const garbage = await this.ctx.entities.release(entities.map((e) => e.id));
 
-    const garbage = await this.ctx.entities.release(entitiesToRelease);
-
-    // 删除物理对象，并按大小回冲用户容量
-    for (const entity of garbage) {
-      try {
-        const policy = await this.ctx.policies.byId(entity.storage_policy_entities);
-        if (policy) {
-          const driver = this.ctx.driverFor(policy);
-          await driver.delete([entity.source]);
+    if (garbage.length > 0) {
+      // 按策略分组取一次策略行（byIds 走 L1、批量 SQL），再按策略批量删对象。
+      const policyIds = Array.from(new Set(garbage.map((e) => e.storage_policy_entities)));
+      const policies = await this.ctx.policies.byIds(policyIds);
+      const policyById = new Map(policies.map((p) => [p.id, p]));
+      const sourcesByPolicy = new Map<number, string[]>();
+      // 容量回冲按用户合并：N 个实体 → 每个用户一次 addStorage（CF 免费档
+      // 单次 Neon 往返 250ms 量级，且每次 addStorage 会连带一次 KV 失效写）。
+      const refundByUser = new Map<number, number>();
+      for (const entity of garbage) {
+        const sources = sourcesByPolicy.get(entity.storage_policy_entities) ?? [];
+        sources.push(entity.source);
+        sourcesByPolicy.set(entity.storage_policy_entities, sources);
+        if (entity.created_by) {
+          refundByUser.set(entity.created_by, (refundByUser.get(entity.created_by) ?? 0) + Number(entity.size));
         }
-      } catch {
-        // 物理删除失败不回滚数据库，留待人工清理（原版同样容忍）
       }
-      if (entity.created_by) {
-        await this.ctx.users.addStorage(entity.created_by, -Number(entity.size));
+      for (const [policyId, sources] of sourcesByPolicy) {
+        const policy = policyById.get(policyId);
+        if (!policy) continue;
+        try {
+          // 与上游一致，100 个一批：驱动要么走 S3 DeleteObjects，要么逐键删，
+          // 分批避免一次请求的签名/查询串过大。
+          for (let i = 0; i < sources.length; i += 100) {
+            await this.ctx.driverFor(policy).delete(sources.slice(i, i + 100));
+          }
+        } catch {
+          // 物理删除失败不回滚数据库，留待人工清理（原版同样容忍）
+        }
       }
+      for (const [uid, delta] of refundByUser) {
+        await this.ctx.users.addStorage(uid, -delta);
+      }
+      await this.ctx.entities.hardDelete(garbage.map((e) => e.id));
     }
-    await this.ctx.entities.hardDelete(garbage.map((e) => e.id));
+
     // 先删直链（外键约束：direct_links.file_id → files.id）
     await this.ctx.directLinks.deleteByFileIds(ids);
     // 软删这些文件关联的分享（shares.file_shares → files.id 是 ON DELETE SET NULL：
@@ -1618,6 +1643,10 @@ export class FileSystemService {
 
     // 彻底删除的文件从全文索引剔除
     await new SearchService(this.ctx).deleteByFileIds(ids);
+  }
+
+  private async purge(file: FileRow): Promise<void> {
+    await this.purgeMany([file.id]);
   }
 
   // -------------------------------------------------------------------------
@@ -1755,20 +1784,29 @@ export class FileSystemService {
     }
   }
 
-  /** 清空回收站。 */
+  /**
+   * 清空回收站。对齐上游 `manager.EmptyTrash`：分页列回收站，每页一批删，
+   * 直到列空为止。原来一次拉 100000 行进内存再逐条 purge（每条约 10 次
+   * 串行往返），大回收站必然撞边缘执行时限、删一半留一半脏数据。
+   * 每页 100 条，purgeMany 内部再把这一页按策略/用户合并成个位数往返。
+   */
   async emptyTrash(): Promise<void> {
     const user = this.ctx.requireUser();
-    const { files } = await this.ctx.files.list({
-      parentId: null,
-      ownerId: user.id,
-      trash: true,
-      page: 0,
-      pageSize: 100000,
-      orderBy: 'name',
-      orderDirection: 'asc',
-    });
-    for (const file of files) {
-      await this.purge(file);
+    const PAGE = 100;
+    // 每轮都读第 0 页：删掉一批后后面的项前移，始终从头部取下一批。
+    // 上限只是防止 purge 异常没删干净时死循环（正常靠空页退出）。
+    for (let round = 0; round < 10000; round++) {
+      const { files } = await this.ctx.files.list({
+        parentId: null,
+        ownerId: user.id,
+        trash: true,
+        page: 0,
+        pageSize: PAGE,
+        orderBy: 'name',
+        orderDirection: 'asc',
+      });
+      if (files.length === 0) break;
+      await this.purgeMany(files.map((f) => f.id));
     }
   }
 
@@ -1783,15 +1821,17 @@ export class FileSystemService {
     // 查询，避免跨库 JOIN（原 listExpiredTrash 的 files JOIN metadata 在分域部署下恒为空，
     // 回收站永不自动清理）。
     const expiredIds = await this.ctx.metadata.listExpiredCollectTime(now);
-    let removed = 0;
+    // 一次批量取行（原来每 id 一次 byId，200 条就是 200 次串行往返）。
+    const rows = await this.ctx.files.byIds(expiredIds);
+    const roots: number[] = [];
     for (const id of expiredIds) {
-      const file = await this.ctx.files.byId(id);
+      const file = rows.get(id);
       // 只处理叶子文件（file_children IS NULL）且非根占位（name <> ''），与原 SQL 选择一致
       if (!file || file.file_children !== null || file.name === '') continue;
-      await this.purge(file);
-      removed++;
+      roots.push(id);
     }
-    return removed;
+    if (roots.length > 0) await this.purgeMany(roots);
+    return roots.length;
   }
 
   /** 文件数上限校验（原版对单目录文件数有限制，这里按用户总量限制）。 */

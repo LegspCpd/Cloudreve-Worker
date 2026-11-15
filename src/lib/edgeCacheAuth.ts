@@ -30,6 +30,7 @@ import type { Context } from 'hono';
 import type { Env } from '../env';
 import { edgeCacheMatch, edgeCachePut } from './edgeCache';
 import { kvFor } from './kvRouter';
+import { coloCacheDelete, coloCacheGetJson, coloCachePutJson } from './coloCache';
 
 /** 缓存命名空间版本：响应结构破坏性变更时手动 +1，使所有旧键失效。 */
 const EDGE_AUTH_CACHE_VER = 'v1';
@@ -46,10 +47,21 @@ export async function authHash(header: string): Promise<string> {
 
 const EPOCH_MEMO = new Map<string, { v: string; t: number }>();
 const EPOCH_MEMO_TTL_MS = 2000;
+/**
+ * epoch 的 colo 层：与用户缓存同理，低流量站点每请求都是新 isolate，2s 的
+ * 进程内 memo 几乎不命中 → 每个首页 GET 都打一次远端 KV。这里加一层同 colo
+ * 跨 isolate 的 Cache API，命中 1~3ms。写操作 bump 时同步删本 colo 的键，
+ * 保证同 colo 下一次读立刻失效；跨 colo 靠 KV 传播 + TTL 兜底。
+ */
+const EPOCH_COLO_TTL_S = 60;
 
 function deployKey(env: Env): string {
   // 用 JWT 密钥前缀区分不同部署，避免跨部署串缓存。
   return (env.JWT_SECRET ?? '').slice(0, 8) || 'dev';
+}
+
+function epochColoKey(env: Env, hash: string): string {
+  return `epoch:${deployKey(env)}:${hash}`;
 }
 
 export async function getAuthEpoch(env: Env, hash: string): Promise<string> {
@@ -57,6 +69,13 @@ export async function getAuthEpoch(env: Env, hash: string): Promise<string> {
   const now = Date.now();
   const cached = EPOCH_MEMO.get(memoKey);
   if (cached && now - cached.t < EPOCH_MEMO_TTL_MS) return cached.v;
+
+  const coloHit = await coloCacheGetJson<string>(epochColoKey(env, hash), EPOCH_COLO_TTL_S);
+  if (coloHit) {
+    EPOCH_MEMO.set(memoKey, { v: coloHit, t: now });
+    return coloHit;
+  }
+
   let v = '0';
   try {
     const kv = kvFor(env, 'session');
@@ -68,6 +87,7 @@ export async function getAuthEpoch(env: Env, hash: string): Promise<string> {
     /* KV 不可用时退化为不失效（靠 TTL 兜底） */
   }
   EPOCH_MEMO.set(memoKey, { v, t: now });
+  void coloCachePutJson(epochColoKey(env, hash), v, EPOCH_COLO_TTL_S);
   return v;
 }
 
@@ -75,12 +95,15 @@ export async function getAuthEpoch(env: Env, hash: string): Promise<string> {
 export async function bumpAuthEpoch(env: Env, hash: string): Promise<void> {
   try {
     const kv = kvFor(env, 'session');
-    if (!kv) return;
-    await kv.put(`edge:ep:${hash}`, String(Date.now()), { expirationTtl: 3600 });
-    EPOCH_MEMO.delete(`${deployKey(env)}:${hash}`);
+    if (kv) await kv.put(`edge:ep:${hash}`, String(Date.now()), { expirationTtl: 3600 });
   } catch {
     /* 失效是尽力而为，失败不影响正确性（TTL 兜底） */
   }
+  // 先写 KV 再清本地缓存（顺序很关键）：反过来时，写 KV 前的一声读会拿旧值
+  // 回填 colo/memo，随后再没人清它 → 旧 epoch 赖满一整个 TTL。清在后面，
+  // 并发读即便回填也是读到新 KV 值；清掉的那份自然是旧的。
+  EPOCH_MEMO.delete(`${deployKey(env)}:${hash}`);
+  void coloCacheDelete(epochColoKey(env, hash));
 }
 
 function originOf(c: Context): string {

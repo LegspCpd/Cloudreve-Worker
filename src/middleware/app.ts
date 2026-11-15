@@ -63,6 +63,7 @@ async function resolveUser(
   header: string | null,
   settings: SettingsProvider,
   db: DbHandle,
+  waitUntil?: (p: Promise<unknown>) => void,
 ): Promise<{ user: UserWithGroup; claims: import('../lib/jwt').Claims | null } | undefined> {
   if (!header) return undefined;
   // HMAC 签名请求不是 JWT，跳过
@@ -83,7 +84,7 @@ async function resolveUser(
   // 走缓存：首屏会并发 6~8 个请求，每个都查一次 `users JOIN groups`
   // 是免费档 Neon 最烧不起的开销（180~550ms/次，并发高了还回 5xx）。
   // L1 内存命中 0 往返，L2(KV) 命中 1 次 KV get —— 见 services/userCache.ts。
-  const user = await getCachedUser(env, db.sql, uid);
+  const user = await getCachedUser(env, db.sql, uid, waitUntil);
   // 封禁 / 停用必须让已签发的 access token 立即失效；原来只在登录和
   // refresh 时检查 status，会话校验路径完全没判，封禁后旧 token 还能用满 TTL。
   if (!user || user.status !== 'active') return undefined;
@@ -144,7 +145,7 @@ export function appContext(): MiddlewareHandler<AppBindings> {
 
     let scopes: string[] | undefined;
     const header = c.req.header('Authorization') ?? null;
-    const resolved = await resolveUser(env, header, settings, db);
+    const resolved = await resolveUser(env, header, settings, db, waitUntil);
     const user = resolved?.user;
     const authMs = performance.now() - startedAt;
 
