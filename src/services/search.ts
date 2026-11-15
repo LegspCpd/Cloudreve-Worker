@@ -467,10 +467,20 @@ export class SearchService {
     await this.indexer.deleteAll();
   }
 
-  /** 按 file_id 删除索引。 */
+  /**
+   * 按 file_id 删除索引。
+   *
+   * ⚠️ 必须是尽力而为：这条在「彻底删除文件」的收尾调用，DB 行已经删完了。
+   * 搜索后端挂掉（Meilisearch 实例被回收会回 404 `Instance does not exist`）
+   * 时若把异常抛出去，接口会回一个错误码，用户以为删除失败、重试又变
+   * 「文件不存在」—— 实际文件早删了。索引残留由重建索引兜底。
+   * 与 `copy` / `rename` 同款处理。
+   */
   async deleteByFileIds(fileIds: number[]): Promise<void> {
     if (!this.indexer || !fileIds.length) return;
-    await this.indexer.deleteByFileIds(fileIds);
+    await this.indexer.deleteByFileIds(fileIds).catch((e) => {
+      console.error('FTS delete after purge failed', e instanceof Error ? e.message : String(e));
+    });
   }
 
   /** 文件复制后同步索引。 */
