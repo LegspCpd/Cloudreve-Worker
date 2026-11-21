@@ -29,7 +29,7 @@ import { kvFor } from '../src/lib/kvRouter';
 import { runCronTasks } from '../src/services/cron';
 
 /** 后端路径前缀：这些请求永远交给 Hono，绝不返回 SPA 壳。 */
-const BACKEND_PREFIXES = ['/api/', '/dav', '/s/', '/f/', '/manifest.json'];
+const BACKEND_PREFIXES = ['/api/', '/dav', '/s/', '/f/', '/d/', '/manifest.json'];
 
 /** 静态资产请求（有扩展名）。平台未命中才进函数，直接 404 —— 不能回
  * SPA 壳，否则「HTML 当 JS 解析」会让白屏自愈彻底失效（CF 上踩过）。 */

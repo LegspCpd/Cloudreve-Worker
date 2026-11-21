@@ -1,0 +1,61 @@
+name: Sync EdgeOne artifact
+
+# EdgeOne 云函数产物内联了 dist/index.html 的 SPA 壳，并且 bundle 了 api/ 与
+# src/。这些一改产物就变，必须重新生成并提交，否则 CI 的 --check 会红。
+# 构建全部在 Actions 里做：复用 Release 上已发布的 cloudflare 前端包，
+# 不跑 yarn/vite（那是 build-frontend.yml 的活）。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'api/**'
+      - 'src/**'
+      - 'scripts/build-edgeone.mjs'
+      - 'wrangler.toml'
+      - '.github/workflows/sync-artifact.yml'
+      # 前端产物变了也要同步（build-frontend.yml 自己会同步一次，这里兜底）
+      - 'frontend-patches/**'
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm install
+
+      - name: 拉取 cloudflare 前端预构建包
+        env:
+          FRONTEND_VARIANT: cloudflare
+        run: node scripts/fetch-frontend.mjs
+
+      - name: 重新生成云函数产物
+        env:
+          FRONTEND_VARIANT: cloudflare
+        run: node scripts/build-edgeone.mjs
+
+      - name: 提交产物（有变化才提）
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 'cloud-functions/[[default]].js'; then
+            echo "产物无变化，跳过提交"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add 'cloud-functions/[[default]].js'
+          git commit -m "chore: 同步 EdgeOne 云函数产物 [skip ci]"
+          git push
