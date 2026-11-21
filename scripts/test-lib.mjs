@@ -40,6 +40,18 @@ try {
   });
   const { attachmentDisposition } = await import(`file://${bundlePath}`);
 
+  const limitBundle = path.join(outDir, 'bodyLimit.mjs');
+  await build({
+    entryPoints: [path.join(ROOT, 'src/lib/bodyLimit.ts')],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node20',
+    outfile: limitBundle,
+    logLevel: 'silent',
+  });
+  const { readBodyLimited } = await import(`file://${limitBundle}`);
+
   console.log('\n[1] 纯 ASCII 文件名');
   check(
     '简单形式',
@@ -141,6 +153,38 @@ try {
   check('同运营商不同 /48 同桶', normalizeRateLimitId('2404:2280:208:0:3::b') === normalizeRateLimitId('2404:2280:2fb:0:3::9'));
   check('邮箱不受影响', normalizeRateLimitId('user@example.com') === 'user@example.com');
   check('分享复合 id 不受影响', normalizeRateLimitId('12:1.2.3.4') === '12:1.2.3.4');
+
+  console.log('\n[9] readBodyLimited（签名前限正文，issue #3628）');
+  const mkReq = (body, headers = {}) =>
+    new Request('https://example.com/api/v4/slave/prepare', {
+      method: 'POST',
+      body,
+      headers,
+    });
+  check('正常正文原样返回', (await readBodyLimited(mkReq('{"a":1}'), 1024)) === '{"a":1}');
+  check(
+    'UTF-8 正文不串字节',
+    (await readBodyLimited(mkReq('{"name":"中文"}'), 1024)) === '{"name":"中文"}',
+  );
+  let tooLarge = null;
+  try {
+    await readBodyLimited(mkReq('x'.repeat(2000)), 1024);
+  } catch (e) {
+    tooLarge = e;
+  }
+  check('超过上限被拒', tooLarge !== null);
+  check('错误码 413', tooLarge?.code === 413, String(tooLarge?.code));
+  let fakeLength = null;
+  try {
+    await readBodyLimited(mkReq('tiny', { 'Content-Length': '99999' }), 1024);
+  } catch (e) {
+    fakeLength = e;
+  }
+  check('伪造的 Content-Length 也被拦', fakeLength !== null);
+  check(
+    'GET 无正文返回空串',
+    (await readBodyLimited(new Request('https://example.com/'), 1024)) === '',
+  );
 } catch (e) {
   failed += 1;
   console.error('\n  ERROR', e instanceof Error ? e.message : e);

@@ -29,6 +29,7 @@ import type { AppBindings } from '../middleware/app';
 import { fail, ok } from '../lib/response';
 import { AppError, Err } from '../lib/errors';
 import { verifyNodeSignature } from '../lib/nodeRpc';
+import { readBodyLimited } from '../lib/bodyLimit';
 import { loadNodeById } from '../db/nodes';
 import { loadSettings } from '../settings/provider';
 import { HashIDCodec } from '../lib/hashid';
@@ -39,6 +40,12 @@ import { UploadService } from '../services/upload';
 import { URI } from '../services/uri';
 
 export const slaveRoutes = new Hono<AppBindings>();
+
+/**
+ * 验签前能读的正文上限。四个端点只传 JSON 控制消息（prepare / complete /
+ * failed / create），1 MiB 足够。限制必须在验签之前 —— 上游 issue #3628。
+ */
+const MAX_SLAVE_BODY = 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // 验签中间件
@@ -53,8 +60,8 @@ slaveRoutes.use('*', async (c, next) => {
   if (node.status !== 'active') return fail(c, Err.param(`Node "${node.name}" is suspended`));
 
   // 正文在这里一次性读走（验签要原文），处理函数从 c.var.slaveBody 取。
-  // 这四个端点都是 JSON，没有流式大正文，读进内存没有压力。
-  const raw = await c.req.text();
+  // 上限校验在验签之前，未认证的大请求不能先吃内存（issue #3628）。
+  const raw = await readBodyLimited(c.req.raw, MAX_SLAVE_BODY);
   const check = await verifyNodeSignature({
     slaveKey: node.slave_key ?? '',
     method: c.req.method,
