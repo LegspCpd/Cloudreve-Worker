@@ -511,14 +511,14 @@ export class WorkflowService {
         // 目录条目先建，保证空目录也不丢
         for (const entry of entries) {
           if (!entry.isDir) continue;
-          const segs = safeEntryPath(entry.name);
+          const segs = safeEntryPath(entry.name, true);
           if (!segs) continue; // 非法路径（穿越/绝对路径），跳过
           await ensureDir(segs);
         }
 
         for (const entry of entries) {
           if (entry.isDir) continue;
-          const segs = safeEntryPath(entry.name);
+          const segs = safeEntryPath(entry.name, true);
           if (!segs) {
             skipped += 1;
             continue;
@@ -571,7 +571,9 @@ export class WorkflowService {
               `Entry "${entry.name}" is ${entry.size} bytes, exceeding the ${MAX_EXTRACT_ENTRY_BYTES} byte per-entry limit`,
             );
           }
-          const segs = safeEntryPath(entry.name) ?? safeEntryPath(file.name.replace(/\.gz$/i, ''));
+          const segs =
+            safeEntryPath(entry.name, true) ??
+            safeEntryPath(file.name.replace(/\.gz$/i, ''), true);
           if (!segs) throw Err.param('Archive entry has an unsafe path');
           await ensureDir(segs.slice(0, -1));
           await this.writeToUri(
@@ -583,17 +585,17 @@ export class WorkflowService {
         } else {
           for (const entry of entries) {
             if (!entry.isDir) continue;
-            const segs = safeEntryPath(entry.name);
+            const segs = safeEntryPath(entry.name, true);
             if (segs) await ensureDir(segs);
           }
           const walker = streamByteSource(gunzip(await source.openFull()));
           await walkTar(walker, async (entry, data) => {
             if (entry.isDir) {
-              const segs = safeEntryPath(entry.name);
+              const segs = safeEntryPath(entry.name, true);
               if (segs) await ensureDir(segs);
               return;
             }
-            const segs = safeEntryPath(entry.name);
+            const segs = safeEntryPath(entry.name, true);
             if (!segs) {
               skipped += 1;
               return; // 没读的数据由 walkTar 补跳
@@ -764,13 +766,21 @@ export class WorkflowService {
         const segs = safeEntryPath(obj.key.slice(effectivePrefix.length)) ?? [];
         if (!segs.length) continue;
         const parentId = segs.length > 1 ? await ensureDir(segs.slice(0, -1)) : base.id;
-        const entity = await this.ctx.entities.create({
-          type: EntityType.Version,
-          source: obj.key,
-          size: obj.size,
-          policyId: policy.id,
-          createdBy: target.id,
-        });
+        // 同一个外部对象导入到多个位置时共用实体并增加引用计数（#3131）。
+        // 各建一个独立实体的话，删掉任一处都会让它的引用归零、物理对象被删，
+        // 另一处就成了指向空对象的文件行 —— 真数据丢失。
+        let entity = await this.ctx.entities.bySource(policy.id, obj.key);
+        if (entity) {
+          await this.ctx.entities.retain([entity.id]);
+        } else {
+          entity = await this.ctx.entities.create({
+            type: EntityType.Version,
+            source: obj.key,
+            size: obj.size,
+            policyId: policy.id,
+            createdBy: target.id,
+          });
+        }
         const file = await this.ctx.files.create({
           type: FileType.File,
           name: segs[segs.length - 1]!,

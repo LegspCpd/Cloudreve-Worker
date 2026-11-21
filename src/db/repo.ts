@@ -1638,6 +1638,23 @@ export class EntityRepo {
     return normalizeEntity(rows[0]!);
   }
 
+  /**
+   * 按存储策略 + 对象键找现有实体（外部目录导入去重用）。
+   *
+   * 同一个外部对象被导入到两个位置时，必须共用同一个实体并增加引用计数；
+   * 否则删掉其中一个文件会把实体引用减到 0，物理对象被删，另一处引用变成
+   * 空壳（上游 discussion #3131 的真实数据丢失场景）。
+   */
+  async bySource(policyId: number, source: string): Promise<EntityRow | null> {
+    const rows = (await this.sql`
+      SELECT * FROM entities
+      WHERE storage_policy_entities = ${policyId} AND source = ${source}
+            AND deleted_at IS NULL
+      ORDER BY id LIMIT 1
+    `) as Record<string, unknown>[];
+    return rows[0] ? normalizeEntity(rows[0]) : null;
+  }
+
   async updateSize(id: number, size: number, source?: string): Promise<void> {
     if (source === undefined) {
       await this.sql`UPDATE entities SET size = ${size}, updated_at = now() WHERE id = ${id}`;
@@ -1653,7 +1670,23 @@ export class EntityRepo {
    * 仅改实体本身，不搬动 blob —— 调用方负责先把对象从旧后端 `get` 再往新后端 `put`，
    * 成功后再调本方法并删除旧对象。见 `FileSystemService.transferPolicy`。
    */
-  async updateSource(id: number, source: string, policyId: number): Promise<void> {
+  async updateSource(
+    id: number,
+    source: string,
+    policyId: number,
+    encMeta?: string | null,
+  ): Promise<void> {
+    // 策略间转移可能改变加密状态：目标加密要写新信封，目标不加密要清空。
+    // 不传 encMeta 时保持原值（普通搬移）。
+    if (encMeta !== undefined) {
+      await this.sql`
+        UPDATE entities
+        SET source = ${source}, storage_policy_entities = ${policyId},
+            enc_meta = ${encMeta}, updated_at = now()
+        WHERE id = ${id}
+      `;
+      return;
+    }
     await this.sql`
       UPDATE entities SET source = ${source}, storage_policy_entities = ${policyId}, updated_at = now()
       WHERE id = ${id}

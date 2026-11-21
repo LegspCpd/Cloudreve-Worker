@@ -289,6 +289,33 @@ try {
     createdBy: uid,
   });
   check('新建实体引用计数为 1', Number(ent.reference_count) === 1, String(ent.reference_count));
+
+  // bySource：外部目录重复导入时复用实体，避免删一处就把物理对象删掉（#3131）
+  const found = await entitiesRepo.bySource(1, 'objects/a.bin');
+  check('bySource 能找到同策略同对象键的实体', found?.id === ent.id, String(found?.id));
+  check(
+    'bySource 不同策略不串',
+    (await entitiesRepo.bySource(999, 'objects/a.bin')) === null,
+  );
+  check('bySource 不同对象键不串', (await entitiesRepo.bySource(1, 'objects/b.bin')) === null);
+
+  // updateSource 的第 4 参数：策略转移时写/清 enc_meta，不传则保持
+  await entitiesRepo.updateSource(ent.id, 'objects/a.bin', 1);
+  keepMeta: {
+    const row = (await db.query(`SELECT enc_meta FROM entities WHERE id = $1`, [ent.id])).rows[0];
+    check('updateSource 不传 enc_meta 时保持原值', row.enc_meta === null, String(row.enc_meta));
+  }
+  await entitiesRepo.updateSource(ent.id, 'objects/a.bin', 1, '{"algorithm":"aes256ctr"}');
+  check(
+    'updateSource 能写 enc_meta',
+    (await db.query(`SELECT enc_meta FROM entities WHERE id = $1`, [ent.id])).rows[0].enc_meta ===
+      '{"algorithm":"aes256ctr"}',
+  );
+  await entitiesRepo.updateSource(ent.id, 'objects/a.bin', 1, null);
+  check(
+    'updateSource 能清 enc_meta（密文迁到明文策略）',
+    (await db.query(`SELECT enc_meta FROM entities WHERE id = $1`, [ent.id])).rows[0].enc_meta === null,
+  );
   // 复制：多一个文件共用同一实体
   await entitiesRepo.retain([ent.id]);
   let rc = Number(

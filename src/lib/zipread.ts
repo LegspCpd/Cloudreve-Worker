@@ -212,12 +212,17 @@ export async function readEntry(
  * 把 ZIP 条目名整理成安全路径段。拒绝绝对路径与 `..` 穿越；
  * 空段和 `.` 被去掉。非法返回 null。
  */
-export function safeEntryPath(name: string): string[] | null {
+export function safeEntryPath(name: string, sanitize = false): string[] | null {
   if (name.startsWith('/') || /^[a-zA-Z]:/.test(name)) return null;
   const segs: string[] = [];
-  for (const seg of name.split(/[\\/]/)) {
-    if (seg === '' || seg === '.') continue;
-    if (seg === '..') return null;
+  for (const raw of name.split(/[\\/]/)) {
+    if (raw === '' || raw === '.') continue;
+    if (raw === '..') return null;
+    // 归档里的文件名可以含 `:` `?` 这些云盘禁止的字符。解压时把非法字符
+    // 换成 `_`，别让一个条目把整个任务打挂（discussion #2483）。
+    // 目录分隔符已在上一步拆开，这里只处理文件名级非法字符。
+    const seg = sanitize ? raw.replace(/[:*?"<>|]/g, '_') : raw;
+    if (seg.length > 255) return null;
     segs.push(seg);
   }
   if (!segs.length) return null;

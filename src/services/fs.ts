@@ -16,6 +16,16 @@ import type { ExplorerView, FileRow, MetadataRow, StoragePolicyRow } from '../db
 import { BooleanSet, EntityType, FileType, GroupPermission, PolicyType } from '../lib/boolset';
 import { isPolicyTypeSupported } from '../storage';
 import { generateSavePath, extOf } from './savepath';
+import {
+  deriveFileMasterKey,
+  deriveFileMasterKeys,
+  encryptStream,
+  decryptStream,
+  importCtrKey,
+  randomEncryptMetadata,
+  wrapEncryptMetadata,
+} from '../lib/encCrypto';
+import type { EncryptMetadata } from '../db/types';
 
 /** 转移文件时按扩展名推导一个 content-type（实体表不存 mime，旧对象读回时也只能靠文件名推）。 */
 function extToMime(name: string): string {
@@ -83,6 +93,7 @@ import {
   CodeEntityNotExist,
   CodeFileCountLimitedReached,
   CodeFileNotFound,
+  CodeEncryptError,
   CodeGroupNotAllowed,
   CodeIllegalObjectName,
   CodeIncorrectPassword,
@@ -1187,9 +1198,14 @@ export class FileSystemService {
   // 重命名
   // -------------------------------------------------------------------------
 
-  async rename(uri: URI, newName: string): Promise<FileResponse> {
+  async rename(uri: URI, newName: string, expectedId?: number | null): Promise<FileResponse> {
     const user = this.ctx.requireUser();
     const file = await this.mustResolve(uri);
+    // 上游 issue #3565：客户端超时重试时，旧请求可能打到「后来占用同一路径的
+    // 新文件」上。调用方若带了发起时的文件 id，就必须一致才动手。
+    if (expectedId != null && expectedId !== file.id) {
+      throw Err.param('Source file changed since the request was made');
+    }
     if (this.isRootFolder(file)) throw new AppError(CodeRootProtected, 'Cannot rename root folder');
     this.assertOwner(file, user.id);
 
@@ -1226,7 +1242,13 @@ export class FileSystemService {
    * `destName` 用于「复制/移动的同时改名」（WebDAV 的 COPY/MOVE 会这样用：
    * Destination 最后一段与源名不同）。不传则沿用源文件名。
    */
-  async moveOrCopy(uris: URI[], dstUri: URI, copy: boolean, destName?: string): Promise<void> {
+  async moveOrCopy(
+    uris: URI[],
+    dstUri: URI,
+    copy: boolean,
+    destName?: string,
+    expectedIds?: Array<number | null>,
+  ): Promise<void> {
     const user = this.ctx.requireUser();
 
     // 原版的约束（dbfs.canMoveOrCopyTo）：
@@ -1250,8 +1272,15 @@ export class FileSystemService {
       throw new AppError(CodeObjectExist, 'Destination is not a folder');
     }
 
-    for (const uri of uris) {
+    for (let i = 0; i < uris.length; i += 1) {
+      const uri = uris[i]!;
       const src = await this.mustResolve(uri);
+      // 上游 issue #3565：超时重试时按路径重解析可能命中后来创建的同名文件。
+      // 调用方带了发起时的 id 就必须一致，否则整批拒绝（部分执行更糟）。
+      const expected = expectedIds?.[i];
+      if (expected != null && expected !== src.id) {
+        throw Err.param('Source file changed since the request was made');
+      }
       if (this.isRootFolder(src)) throw new AppError(CodeRootProtected, 'Cannot move root folder');
       this.assertOwner(src, user.id);
 
@@ -1477,15 +1506,58 @@ export class FileSystemService {
     });
 
     const mime = extToMime(file.name);
+
+    // 策略转移必须尊重目标的加密设置（上游 issue #3518）。
+    // 原来只是把对象流原样复制过去、enc_meta 不动，于是「开加密的策略里
+    // 躺着明文」或「不开加密的策略里躺着解不开的密文」。客户端加密用的
+    // AES-CTR 是流加密、密文与明文等长，所以可以在传输过程中直接转流，
+    // size 不变。
+    const sourceEncrypted = Boolean(entity.enc_meta);
+    const targetRelay =
+      newPolicy.settings?.relay === true ||
+      newPolicy.type === PolicyType.Upyun ||
+      (newPolicy.type === PolicyType.S3 && !newPolicy.access_key);
+    const targetEncrypted = !targetRelay && newPolicy.settings?.encryption === true;
+
+    let body = content.body as ReadableStream<Uint8Array>;
+    let nextEncMeta: string | null | undefined; // undefined = 不变
+    let nextEncrypted = sourceEncrypted;
+
+    if (sourceEncrypted && !targetEncrypted) {
+      // 密文 → 明文策略：边搬边解密，清掉 enc_meta，否则下载端会拿不存在的
+      // 元数据当密文解（或干脆没密钥）。
+      const meta = JSON.parse(entity.enc_meta!) as EncryptMetadata;
+      if (!meta || typeof meta !== 'object') {
+        throw new AppError(CodeEncryptError, 'Corrupted encryption metadata');
+      }
+      const keys = await deriveFileMasterKeys(this.ctx.env, this.ctx.settings.secretKey);
+      const { key, iv } = await importCtrKey(meta, 'decrypt', keys);
+      body = decryptStream(body, key, iv);
+      nextEncMeta = null;
+      nextEncrypted = false;
+    } else if (!sourceEncrypted && targetEncrypted) {
+      // 明文 → 加密策略：生成每文件新密钥，边搬边加密，落信封化的元数据
+      const meta = randomEncryptMetadata();
+      const master = await deriveFileMasterKey(this.ctx.env, this.ctx.settings.secretKey);
+      const { key, iv } = await importCtrKey(meta, 'encrypt', master);
+      body = encryptStream(body, key, iv);
+      nextEncMeta = JSON.stringify(await wrapEncryptMetadata(meta, master));
+      nextEncrypted = true;
+    }
+    // 两边都加密：密文原样搬，enc_meta 里的文件密钥继续有效，不必重新加密
+
     await newDriver.put(
       { savePath, fileName: file.name, size: content.size, mimeType: mime, overwrite: false },
-      content.body,
+      body,
       content.size,
     );
 
     // 先在新后端落盘成功，再切实体指针与文件归属，最后删旧的
-    await this.ctx.entities.updateSource(entity.id, savePath, newPolicy.id);
+    await this.ctx.entities.updateSource(entity.id, savePath, newPolicy.id, nextEncMeta);
     await this.ctx.files.updateStoragePolicy(file.id, newPolicy.id);
+    if (nextEncrypted !== sourceEncrypted) {
+      await this.ctx.files.setEncrypted(file.id, nextEncrypted);
+    }
     await oldDriver.delete([entity.source]).catch(() => {});
 
     logAudit(this.ctx, 'file_transfer', uid, {

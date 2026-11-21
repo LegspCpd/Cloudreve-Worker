@@ -221,12 +221,27 @@ fileRoutes.post('/create', async (c) => {
 fileRoutes.post('/rename', async (c) => {
   const ctx = ctxOf(c);
   if (!ctx.user) return fail(c, Err.loginRequired());
-  const body = (await c.req.json().catch(() => ({}))) as { uri?: string; new_name?: string };
+  const body = (await c.req.json().catch(() => ({}))) as {
+    uri?: string;
+    new_name?: string;
+    /** 可选：发起请求时看到的文件 id（hashid），防止超时重试误伤同名新文件 */
+    expected_id?: string;
+  };
   if (!body.uri || !body.new_name) {
     return fail(c, Err.param('uri and new_name are required'));
   }
   try {
-    const res = await new FileSystemService(ctx).rename(URI.parse(body.uri), body.new_name);
+    // 传了却解不出来 = 客户端数据坏了，按参数错误处理，不要悄悄跳过校验
+    let expectedId: number | null | undefined;
+    if (body.expected_id != null) {
+      expectedId = ctx.codec.decodeFileID(body.expected_id);
+      if (expectedId === null) return fail(c, Err.param('invalid expected_id'));
+    }
+    const res = await new FileSystemService(ctx).rename(
+      URI.parse(body.uri),
+      body.new_name,
+      expectedId,
+    );
     return ok(c, res);
   } catch (e) {
     return fail(c, e);
@@ -298,6 +313,8 @@ fileRoutes.post('/move', async (c) => {
     uris?: string[];
     dst?: string;
     copy?: boolean;
+    /** 可选：与 uris 一一对应的文件 id（hashid），见 issue #3565 */
+    expected_ids?: string[];
   };
   if (!body.uris?.length || !body.dst) {
     return fail(c, Err.param('uris and dst are required'));
@@ -306,11 +323,23 @@ fileRoutes.post('/move', async (c) => {
     return fail(c, new AppError(40074, 'Too many uris'));
   }
   try {
+    let expectedIds: Array<number | null> | undefined;
+    if (body.expected_ids != null) {
+      if (body.expected_ids.length !== body.uris.length) {
+        return fail(c, Err.param('expected_ids must match uris'));
+      }
+      expectedIds = body.expected_ids.map((raw) => ctx.codec.decodeFileID(raw));
+      if (expectedIds.some((id) => id === null)) {
+        return fail(c, Err.param('invalid expected_ids'));
+      }
+    }
     const service = new FileSystemService(ctx);
     await service.moveOrCopy(
       body.uris.map((u) => URI.parse(u)),
       URI.parse(body.dst),
       body.copy === true,
+      undefined,
+      expectedIds,
     );
     return ok(c);
   } catch (e) {

@@ -185,6 +185,31 @@ try {
     'GET 无正文返回空串',
     (await readBodyLimited(new Request('https://example.com/'), 1024)) === '',
   );
+
+  console.log('\n[10] safeEntryPath sanitize（discussion #2483：归档非法文件名不能整任务失败）');
+  const zipBundle = path.join(outDir, 'zipread.mjs');
+  await build({
+    entryPoints: [path.join(ROOT, 'src/lib/zipread.ts')],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node20',
+    outfile: zipBundle,
+    logLevel: 'silent',
+  });
+  const { safeEntryPath } = await import(`file://${zipBundle}`);
+  check('默认保留原字符（由 validateName 决定合法性）', JSON.stringify(safeEntryPath('file:a.txt')) === '["file:a.txt"]');
+  check(
+    'sanitize 把非法字符换成下划线',
+    JSON.stringify(safeEntryPath('file:a.txt', true)) === '["file_a.txt"]',
+  );
+  check(
+    'sanitize 保留目录层级',
+    JSON.stringify(safeEntryPath('dir/a?b/c*d.txt', true)) === '["dir","a_b","c_d.txt"]',
+  );
+  check('sanitize 仍拒绝路径穿越', safeEntryPath('../evil.txt', true) === null);
+  check('sanitize 仍拒绝绝对路径', safeEntryPath('/etc/passwd', true) === null);
+  check('sanitize 保留正常名字', JSON.stringify(safeEntryPath('普通/文件.txt', true)) === '["普通","文件.txt"]');
 } catch (e) {
   failed += 1;
   console.error('\n  ERROR', e instanceof Error ? e.message : e);
