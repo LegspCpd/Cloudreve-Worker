@@ -27,6 +27,21 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * 前端产物有三个版本（build-frontend.yml 在 Actions 里各构建一份发 Release）：
+ *   cloudflare  带全部补丁 + _headers(CF immutable 缓存) + 白屏自愈脚本。默认。
+ *   universal   带前端源码补丁，但不带 CF 专有的 _headers / 自愈脚本。
+ *               EdgeOne 在 edgeone.json 里自己声明了 /assets/* 缓存，ESA 也是
+ *               自己的静态配置；CF 那套自愈是治 SPA fallback 回 200 HTML 的坑，
+ *               别的平台没这毛病，带过去只会多一次无意义的 6s 定时检查。
+ *   vanilla     纯上游 c7b6fa5，一个补丁都不叠（对照/回滚用）。
+ *
+ * 本地开发默认 cloudflare；CI 的 build-frontend 工作流显式传三个值。
+ */
+const VARIANT = ['cloudflare', 'universal', 'vanilla'].includes(process.env.FRONTEND_VARIANT)
+  ? process.env.FRONTEND_VARIANT
+  : 'cloudflare';
 const TARGET = path.join(ROOT, 'frontend');
 const TARBALL_PATH = path.join(ROOT, '_frontend.tar.gz');
 const SRC_DIR = path.join(ROOT, '_frontend-src');
@@ -43,7 +58,7 @@ const RELEASE_TAG = 'frontend-assets';
  * 包的**内容**就变了，但名字没变，CI 与 Cloudflare 会继续命中旧包 —— 改了等于
  * 没改。把补丁内容的指纹并进名字，改补丁自动生成新包。
  */
-function patchFingerprint() {
+function patchFingerprint(variant = VARIANT) {
   const dir = path.join(ROOT, 'frontend-patches');
   if (!existsSync(dir)) return 'none';
   const files = [];
@@ -69,15 +84,25 @@ function patchFingerprint() {
   // 不变，部署时会继续用旧包、新逻辑永远上不去。
   h.update('scripts/fetch-frontend.mjs');
   h.update(readFileSync(path.join(ROOT, 'scripts/fetch-frontend.mjs'), 'utf8').replaceAll('\r\n', '\n'));
+  // 三个版本共用一套补丁目录，指纹必须把版本算进去，否则 vanilla 和
+  // cloudflare 会算出同一个包名，Release 上互相覆盖。
+  h.update(`variant:${variant}`);
   return h.digest('hex').slice(0, 8);
 }
 
-const RELEASE_ASSET = `frontend-${COMMIT.slice(0, 7)}-${patchFingerprint()}.tar.gz`;
+const RELEASE_ASSET = `frontend-${COMMIT.slice(0, 7)}-${VARIANT}-${patchFingerprint()}.tar.gz`;
 
-// `node scripts/fetch-frontend.mjs --asset-name`：只打印包名，给 CI 用，
+// `node scripts/fetch-frontend.mjs --asset-name [variant]`：只打印包名，给 CI 用，
 // 避免 CI 里再复刻一遍命名规则（复刻必然漂移）。
+// 传 variant 时临时覆盖环境变量，让工作流能一次拿到三个版本的包名。
 if (process.argv.includes('--asset-name')) {
-  console.log(RELEASE_ASSET);
+  const idx = process.argv.indexOf('--asset-name');
+  const want = process.argv[idx + 1];
+  if (want && ['cloudflare', 'universal', 'vanilla'].includes(want)) {
+    console.log(`frontend-${COMMIT.slice(0, 7)}-${want}-${patchFingerprint(want)}.tar.gz`);
+  } else {
+    console.log(RELEASE_ASSET);
+  }
   process.exit(0);
 }
 
@@ -177,7 +202,7 @@ async function fetchWithRetry(url, attempts = 4) {
  * 管理后台改站点名后，PWA 名称与站内标题跟随设置 —— manifest.json 由
  * Worker 动态生成，页面标题由前端应用加载配置后自行更新。
  */
-function patchIndexHtml() {
+function patchIndexHtml({ platformExtras = true } = {}) {
   const file = path.join(TARGET, 'index.html');
   if (!existsSync(file)) return;
   const html = readFileSync(file, 'utf8');
@@ -226,6 +251,10 @@ function patchIndexHtml() {
     finalHtml = finalHtml.replace('</head>', `  ${logoTag}\n  </head>`);
   }
 
+  // 白屏自愈只在 cloudflare 版本注入：这是治 CF Assets 的
+  // `not_found_handling = "single-page-application"` 把缺失 chunk 回成 200 HTML
+  // 的坑，EdgeOne/ESA 没有这个行为，注进去只会多一次无意义的 6s 定时检查。
+  if (platformExtras) {
   // 白屏自愈：一旦某一版前端 JS 崩了（2026-10-26 拆 chunk 拆出循环依赖就崩过一次），
   // Service Worker 会把坏版本连同 index.html 一起预缓存下来；而它的新版本要靠页面里
   // 的「有新版本，刷新？」提示来激活 —— 页面都白屏了，提示永远弹不出来，用户就**永久
@@ -244,6 +273,10 @@ function patchIndexHtml() {
     );
   } else {
     finalHtml = finalHtml.replace('</body>', `  ${selfHealTag}\n</body>`);
+  }
+  } else {
+    // universal/vanilla：上游包或别的版本的包里可能烘焙过自愈脚本，清掉
+    finalHtml = finalHtml.replace(/<script>\s*\/\* __edge_self_heal \*\/[\s\S]*?<\/script>\s*/g, '');
   }
 
   if (finalHtml !== html) writeFileSync(file, finalHtml);
@@ -344,11 +377,22 @@ function writeHeaders() {
   writeFileSync(file, content);
 }
 
+/**
+ * CF 专有的产物后处理：index.html 占位符填充/预加载/白屏自愈 + _headers 缓存头。
+ * EdgeOne 在 edgeone.json、ESA 在自己的静态配置里已经声明了 /assets/* immutable，
+ * 自愈脚本也是治 CF 的 SPA fallback 回 200 HTML 才需要的，别的平台别注入。
+ * 但 index.html 的 `{siteName}` 等占位符是所有平台都要填的 —— 上游模板里就是
+ * 空占位，不填的话三个平台的标题都是字面量 `{siteName}`。
+ */
+function postProcess() {
+  patchIndexHtml({ platformExtras: VARIANT === 'cloudflare' });
+  if (VARIANT === 'cloudflare') writeHeaders();
+}
+
 // --- 1. 已有产物 ---
 if (existsSync(path.join(TARGET, 'index.html'))) {
-  console.log('  frontend/ 已存在，补一遍占位符填充后直接复用。');
-  patchIndexHtml();
-  writeHeaders();
+  console.log(`  frontend/ 已存在（${VARIANT}），补一遍占位符填充后直接复用。`);
+  postProcess();
   process.exit(0);
 }
 console.log('  未发现 frontend/，开始获取官方前端…');
@@ -378,8 +422,7 @@ try {
         // 占位符填充 / _headers 注入失败**不能**拖累快路径 —— 那只是锦上添花，
         // 抛出去会被外层 catch 捕获、误判成「Release 不可用」而退回源码构建。
         try {
-          patchIndexHtml();
-          writeHeaders();
+          postProcess();
         } catch (e) {
           console.log(`  （占位符填充/头注入失败，不影响前端本体，继续：${e?.message || e}）`);
         }
@@ -461,6 +504,10 @@ if (!existsSync(path.join(built, 'index.html'))) {
  * 上游提交固定（见 COMMIT），补丁只需覆盖我们改过的文件，其余沿用上游。
  */
 function applyFrontendPatches(srcDir) {
+  if (VARIANT === 'vanilla') {
+    console.log('  vanilla 版本：跳过全部前端补丁（对照/回滚用）。');
+    return;
+  }
   const patches = path.join(ROOT, 'frontend-patches');
   if (!existsSync(patches)) return;
   console.log('  叠加本地前端补丁（Pro 去除 / 缓存键刷新等）…');
@@ -504,7 +551,6 @@ function applyDependencyPins(srcDir) {
 rmSync(TARGET, { recursive: true, force: true });
 cpSync(built, TARGET, { recursive: true });
 cleanup();
-patchIndexHtml();
-writeHeaders();
+postProcess();
 
 console.log(`✅ 官方前端就绪：${TARGET}`);

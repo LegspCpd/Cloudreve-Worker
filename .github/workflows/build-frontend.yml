@@ -1,0 +1,111 @@
+name: Build Frontend
+
+# 前端构建全部在 Actions 里做，本机不跑 yarn/vite。
+# 一次构建三个版本，打到同一个 Release（tag: frontend-assets）供各平台拉取：
+#   cloudflare  全补丁 + _headers + 白屏自愈（CF Workers 默认）
+#   universal   前端源码补丁，无 CF 专有的 _headers / 自愈（EdgeOne、ESA）
+#   vanilla     纯上游 c7b6fa5，无补丁（对照/回滚）
+#
+# 本地 fetch-frontend.mjs 默认拉 cloudflare；EdgeOne/ESA 构建时传
+# FRONTEND_VARIANT=universal，就能拿到自己的包。
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'frontend-patches/**'
+      - 'scripts/fetch-frontend.mjs'
+      - '.github/workflows/build-frontend.yml'
+
+permissions:
+  contents: write # 上传 Release asset
+
+jobs:
+  build:
+    name: Build ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [cloudflare, universal, vanilla]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 缓存 yarn 下载，三次构建共享
+      - name: 缓存依赖下载
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/yarn
+          key: yarn-fe-${{ hashFiles('frontend-patches/dep-pins.json') }}
+
+      - name: 构建前端（${{ matrix.variant }}）
+        env:
+          FRONTEND_VARIANT: ${{ matrix.variant }}
+          # 强制走源码构建，不吃 Actions 缓存里可能存在的别版本 frontend/
+          CLOUDREV_FE_RELEASE: '0'
+        run: node scripts/fetch-frontend.mjs
+
+      - name: 打包并上传 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FRONTEND_VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          ASSET=$(node scripts/fetch-frontend.mjs --asset-name)
+          echo "包名：$ASSET"
+          rm -rf _pack && mkdir -p _pack/_frontend-src
+          cp -r frontend "_pack/_frontend-src/frontend-${ASSET%.tar.gz}"
+          tar -czf "$ASSET" -C _pack _frontend-src
+          gh release view frontend-assets >/dev/null 2>&1 || \
+            gh release create frontend-assets --title "Frontend assets" \
+              --notes "前端三版本预构建包：cloudflare / universal / vanilla，commit + 补丁哈希 + 版本各一包"
+          gh release upload frontend-assets "$ASSET" --clobber
+          echo "已发布 $ASSET"
+
+  # EdgeOne 云函数产物内联了 dist/index.html（SPA 壳），前端一变产物就变。
+  # 让本工作流用刚构建的 cloudflare 前端重新生成并提交，CI 的 --check 才能一致。
+  # 本机不跑 vite，所以产物只能在这儿生成。
+  sync-edgeone-artifact:
+    name: Sync EdgeOne artifact
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装后端依赖
+        run: npm install
+
+      - name: 拉取 cloudflare 前端（刚发布的预构建包）
+        env:
+          FRONTEND_VARIANT: cloudflare
+        run: node scripts/fetch-frontend.mjs
+
+      - name: 重新生成云函数产物
+        env:
+          FRONTEND_VARIANT: cloudflare
+        run: node scripts/build-edgeone.mjs
+
+      - name: 提交产物（有变化才提）
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- 'cloud-functions/[[default]].js'; then
+            echo "产物无变化，跳过提交"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add 'cloud-functions/[[default]].js'
+          # [skip ci] 避免自己的提交再触发一轮构建
+          git commit -m "chore: 同步 EdgeOne 云函数产物到最新前端 [skip ci]"
+          git push

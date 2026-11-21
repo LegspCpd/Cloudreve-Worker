@@ -51,6 +51,8 @@ jobs:
   build-check:
     name: Build Check
     runs-on: ubuntu-latest
+    env:
+      FRONTEND_VARIANT: cloudflare
     steps:
       - uses: actions/checkout@v4
 
@@ -67,7 +69,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: frontend
-          key: frontend-${{ hashFiles('scripts/fetch-frontend.mjs', 'frontend-patches/**') }}
+          key: frontend-${{ hashFiles('scripts/fetch-frontend.mjs', 'frontend-patches/**') }}-cloudflare
 
       - name: 安装依赖
         run: npm install
@@ -145,32 +147,9 @@ jobs:
       - name: EdgeOne 云函数产物一致性
         run: node scripts/build-edgeone.mjs --check
 
-      # 前端 COMMIT 变了但还没有对应预构建包时，这一次是源码现构建。
-      # 顺手把产物发到 Release（tag frontend-assets），下次 CI 与 Cloudflare
-      # 的构建都能秒级命中；否则每 bump 一次前端都要再等一遍 yarn + vite。
-      # 失败不影响构建结论（权限/网络问题只是让下次继续慢）。
-      - name: 发布前端预构建包（缺失时）
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # 包名由脚本算（commit + 补丁哈希），CI 不再复刻命名规则
-          ASSET=$(node scripts/fetch-frontend.mjs --asset-name)
-          if gh release view frontend-assets --json assets --jq '.assets[].name' 2>/dev/null | grep -qx "$ASSET"; then
-            echo "$ASSET 已存在，跳过"
-            exit 0
-          fi
-          SHORT="${ASSET#frontend-}"
-          SHORT="${SHORT%.tar.gz}"
-          rm -rf _pack && mkdir -p _pack/_frontend-src
-          cp -r frontend "_pack/_frontend-src/frontend-${SHORT}"
-          tar -czf "$ASSET" -C _pack _frontend-src
-          gh release view frontend-assets >/dev/null 2>&1 || \
-            gh release create frontend-assets --title "Frontend assets" \
-              --notes "fetch-frontend.mjs 快路径用的预构建前端产物，commit + 补丁哈希各一包"
-          gh release upload frontend-assets "$ASSET" --clobber
-          echo "已发布 $ASSET"
+      # 前端预构建包（三版本）统一由 build-frontend.yml 构建并发布到
+      # Release（tag frontend-assets）。这里只消费，不再自己发布 —— 两边
+      # 各发一份会在 Release 上互相覆盖，且本地无法构建导致产物对不上。
 
   # 真的把 Worker 发布到 Cloudflare；没配 CF secrets 时部署步骤跳过。
   deploy-check:
@@ -179,6 +158,7 @@ jobs:
     needs: build-check
     if: github.event_name != 'pull_request'
     env:
+      FRONTEND_VARIANT: cloudflare
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -205,7 +185,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: frontend
-          key: frontend-${{ hashFiles('scripts/fetch-frontend.mjs', 'frontend-patches/**') }}
+          key: frontend-${{ hashFiles('scripts/fetch-frontend.mjs', 'frontend-patches/**') }}-cloudflare
 
       - name: 安装依赖
         run: npm install
@@ -253,6 +233,8 @@ jobs:
   edgeone-build:
     name: EdgeOne Build Check
     runs-on: ubuntu-latest
+    env:
+      FRONTEND_VARIANT: cloudflare
     steps:
       - uses: actions/checkout@v4
 
@@ -265,7 +247,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: frontend
-          key: frontend-${{ hashFiles('scripts/fetch-frontend.mjs', 'frontend-patches/**') }}
+          key: frontend-${{ hashFiles('scripts/fetch-frontend.mjs', 'frontend-patches/**') }}-cloudflare
 
       - name: 安装依赖
         run: npm install
@@ -296,6 +278,7 @@ jobs:
     needs: [build-check, edgeone-build]
     if: github.event_name != 'pull_request'
     env:
+      FRONTEND_VARIANT: cloudflare
       EDGEONE_API_TOKEN: ${{ secrets.EDGEONE_API_TOKEN }}
       EDGEONE_PROJECT: ${{ vars.EDGEONE_PROJECT }}
       EDGEONE_ENV: ${{ vars.EDGEONE_ENV }}
@@ -343,6 +326,8 @@ jobs:
   esa-build:
     name: ESA Build Check
     runs-on: ubuntu-latest
+    env:
+      FRONTEND_VARIANT: cloudflare
     steps:
       - uses: actions/checkout@v4
 
@@ -355,7 +340,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: frontend
-          key: frontend-${{ hashFiles('scripts/fetch-frontend.mjs', 'frontend-patches/**') }}
+          key: frontend-${{ hashFiles('scripts/fetch-frontend.mjs', 'frontend-patches/**') }}-cloudflare
 
       - name: 安装依赖
         run: npm install
