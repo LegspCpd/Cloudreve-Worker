@@ -58,4 +58,14 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add 'cloud-functions/[[default]].js'
           git commit -m "chore: 同步 EdgeOne 云函数产物 [skip ci]"
-          git push
+          # build-frontend 和本工作流可能同时提交产物，push 会撞「fetch first」。
+          # 产物是构建产物，冲突时以本工作流刚生成的为准（rebase 时用 ours）。
+          for i in 1 2 3; do
+            if git push; then exit 0; fi
+            echo "push 被拒（第 $i 次），rebase 后重试"
+            git fetch origin main
+            git rebase -X ours origin/main || { git rebase --abort; git reset --hard origin/main; exit 1; }
+            sleep 5
+          done
+          echo "产物同步连续失败，留给下一次构建" >&2
+          exit 1
