@@ -15,6 +15,7 @@ import { AppContext } from './context';
 import { logAudit } from './audit';
 import { FileSystemService, type DirectLinkInfo } from './fs';
 import { FileSystemType, URI } from './uri';
+import { randomString } from '../lib/crypto';
 import { type EncryptMetadata, type EntityRow, type FileRow } from '../db/types';
 import { FileType } from '../lib/boolset';
 import { decryptStream, importCtrKey, incrementCounter, deriveFileMasterKeys } from '../lib/encCrypto';
@@ -445,7 +446,11 @@ export class DownloadService {
   // 外链（直链）
   // -------------------------------------------------------------------------
 
-  async createDirectLink(uris: URI[], speed = 0): Promise<DirectLinkInfo[]> {
+  async createDirectLink(
+    uris: URI[],
+    speed = 0,
+    customSlug?: string,
+  ): Promise<DirectLinkInfo[]> {
     const user = this.ctx.requireUser();
     const base = this.ctx.settings.siteUrl.replace(/\/+$/, '');
     const results: DirectLinkInfo[] = [];
@@ -454,14 +459,20 @@ export class DownloadService {
       if (file.owner_id !== user.id && !this.ctx.isAdmin) {
         throw new AppError(CodeOwnerOnly, 'Only owner or administrator can perform this action');
       }
-      const link = await this.ctx.directLinks.create(file.id, file.name, speed);
-      logAudit(this.ctx, 'get_direct_link', user.id, { name: file.name });
+      // 默认生成不可猜的随机短码；用户显式填了就用自定义的。
+      // 随机码走 CSPRNG，长度 10（62^10 ≈ 8.4e17），不泄露文件名和路径。
+      const slug = customSlug?.trim() || randomString(10);
+      const link = await this.ctx.directLinks.create(file.id, file.name, speed, slug);
+      logAudit(this.ctx, 'get_direct_link', user.id, { name: file.name, slug });
       const id = this.ctx.codec.encodeSourceLinkID(link.id);
       results.push({
         id,
         // 字段名对齐前端直链契约：link = 直链 URL，file_url = 文件 URI
         link: `${base}${DIRECT_LINK_PREFIX}/${id}/${encodeURIComponent(file.name)}`,
         url: `${base}${DIRECT_LINK_PREFIX}/${id}/${encodeURIComponent(file.name)}`,
+        // 新增：固定前缀 + 随机/自定义码，访问后 302 到文件直链并下载
+        short_link: `${base}/d/${slug}`,
+        slug,
         downloaded: link.downloads,
         created_at: link.created_at.toISOString(),
         file_url: uri.toString(),
@@ -484,14 +495,56 @@ export class DownloadService {
     logAudit(this.ctx, 'delete_direct_link', user.id, { name: file.name });
   }
 
+  /**
+   * 访问短链 `/d/<slug>`：校验后返回文件直链地址。
+   *
+   * 与 visitDirectLink 共用后半段权限校验，只把入口从 hashid 换成 slug。
+   */
+  async visitShortLink(slug: string): Promise<string> {
+    const link = await this.ctx.directLinks.bySlug(slug);
+    if (!link) throw new AppError(404, 'Direct link not found');
+    return this.resolveDirectLinkTarget(link.id, link.file_id, link.speed);
+  }
+
+  /**
+   * 修改直链短码。空 slug 重新生成随机码。
+   * 只有属主或管理员能改（与删除直链同一套校验）。
+   */
+  async updateDirectLinkSlug(linkHashId: string, customSlug?: string) {
+    const id = this.ctx.codec.decodeSourceLinkID(linkHashId);
+    if (id === null) throw new AppError(404, 'Direct link not found');
+    const link = await this.ctx.directLinks.byId(id);
+    if (!link) throw new AppError(404, 'Direct link not found');
+    const user = this.ctx.requireUser();
+    const file = await this.ctx.files.byId(link.file_id);
+    if (!file || (file.owner_id !== user.id && !this.ctx.isAdmin)) {
+      throw new AppError(CodeOwnerOnly, 'Only owner or administrator can perform this action');
+    }
+
+    const slug = customSlug?.trim() || randomString(10);
+    await this.ctx.directLinks.updateSlug(id, slug);
+    logAudit(this.ctx, 'get_direct_link', user.id, { name: file.name, slug });
+    const base = this.ctx.settings.siteUrl.replace(/\/+$/, '');
+    return { id: linkHashId, slug, short_link: `${base}/d/${slug}` };
+  }
+
   /** 访问直链：返回远端地址（由路由层 302）。 */
   async visitDirectLink(linkHashId: string): Promise<string> {
     const id = this.ctx.codec.decodeSourceLinkID(linkHashId);
     if (id === null) throw new AppError(404, 'Direct link not found');
     const link = await this.ctx.directLinks.byId(id);
     if (!link) throw new AppError(404, 'Direct link not found');
+    return this.resolveDirectLinkTarget(link.id, link.file_id, link.speed);
+  }
 
-    const file = await this.ctx.files.byId(link.file_id);
+  /** 直链共用的属主/组权限校验 + 签发目标地址。 */
+  private async resolveDirectLinkTarget(
+    id: number,
+    fileId: number,
+    speed: number,
+  ): Promise<string> {
+
+    const file = await this.ctx.files.byId(fileId);
     if (!file || !file.primary_entity) throw Err.fileNotFound();
 
     // 上游 PR #3524（GetFileFromDirectLink）：属主被封禁/删除，或其当前
@@ -519,7 +572,7 @@ export class DownloadService {
       return driver.source(entity.source, {
         isDownload: true,
         displayName: file.name,
-        speed: link.speed,
+        speed,
       });
     }
 

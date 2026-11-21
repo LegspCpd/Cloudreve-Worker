@@ -430,6 +430,8 @@ export const AuditLogType = {
 
 export interface MultipleUriService {
   uris: string[];
+  /** 直链短码：留空=随机，填了=自定义（仅单文件时有效） */
+  slug?: string;
 }
 
 export const ViewerAction = {
@@ -554,6 +556,9 @@ export interface DeleteUploadSessionService {
 export interface DirectLink {
   file_url: string;
   link: string;
+  /** 短链（/d/<slug>），访问后跳转到文件直链下载 */
+  short_link?: string;
+  slug?: string;
 }
 
 export interface PatchViewSyncService {

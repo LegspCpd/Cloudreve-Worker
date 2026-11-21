@@ -33,6 +33,7 @@ import m0015 from '../../migrations/0015_share_report.sql';
 import m0016 from '../../migrations/0016_social_bindings.sql';
 import m0017 from '../../migrations/0017_entity_encryption.sql';
 import m0018 from '../../migrations/0018_key_values.sql';
+import m0019 from '../../migrations/0019_direct_link_slug.sql';
 import { withRetry } from './index';
 import { randomString } from '../lib/crypto';
 import { splitStatements } from '../lib/sql-split.mjs';
@@ -40,7 +41,7 @@ import type { Env } from '../env';
 import { kvFor } from '../lib/kvRouter';
 import { resolveDb, type DbHandle } from './shard';
 
-export const BOOTSTRAP_FLAG = 'bootstrap:done:v19';
+export const BOOTSTRAP_FLAG = 'bootstrap:done:v20';
 
 const MIGRATIONS: ReadonlyArray<readonly [name: string, sqlText: string]> = [
   ['0001_init.sql', m0001],
@@ -71,6 +72,8 @@ const MIGRATIONS: ReadonlyArray<readonly [name: string, sqlText: string]> = [
   // 0018：通用 KV 表（无 KV 绑定环境的 kvRouter 兜底）。曾漏注册，
   // 只能靠 kvStore 运行时的 CREATE TABLE IF NOT EXISTS 兜底，自举不会建表。
   ['0018_key_values.sql', m0018],
+  // 0019：直链随机 / 自定义短码（direct_links.slug）
+  ['0019_direct_link_slug.sql', m0019],
 ];
 
 /** KV 标记：值是最后一个已应用的迁移文件名，文件名不变就跳过。 */

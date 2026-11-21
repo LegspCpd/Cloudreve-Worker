@@ -162,6 +162,8 @@ export interface DirectLinkRow {
   downloads: number;
   speed: number;
   file_id: number;
+  /** 可选的短链码（/d/<slug>），空表示只有老的 /f/ 链接 */
+  slug?: string | null;
 }
 
 export interface SettingRow {

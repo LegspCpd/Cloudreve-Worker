@@ -1108,6 +1108,21 @@ export function getFileDirectLinks(req: MultipleUriService): ThunkResponse<Direc
   };
 }
 
+/** 修改直链短码：留空则由服务端重新生成随机码。 */
+export function sendUpdateDirectLinkSlug(
+  id: string,
+  slug: string,
+): ThunkResponse<{ id: string; slug: string; short_link: string }> {
+  return async (dispatch, _getState) => {
+    return await dispatch(
+      send(`/file/source/${id}/slug`, {
+        data: { slug },
+        method: "PATCH",
+      }, { ...defaultOpts }),
+    );
+  };
+}
+
 export function sendDeleteDirectLink(id: string): ThunkResponse {
   return async (dispatch, _getState) => {
     return await dispatch(send(`/file/source/${id}`, { method: "DELETE" }, { ...defaultOpts }));

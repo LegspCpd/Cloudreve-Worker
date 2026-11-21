@@ -2108,23 +2108,19 @@ export class DirectLinkRepo {
     const rows = (await this.sql`
       SELECT * FROM direct_links WHERE file_id = ${fileId} AND deleted_at IS NULL ORDER BY id ASC
     `) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      id: toNum(r.id),
-      created_at: toDate(r.created_at) ?? new Date(),
-      name: String(r.name ?? ''),
-      downloads: toNum(r.downloads),
-      speed: toNum(r.speed),
-      file_id: toNum(r.file_id),
-    }));
+    return rows.map((r) => this.normalize(r));
   }
 
-  async create(fileId: number, name: string, speed: number) {
+  async create(fileId: number, name: string, speed: number, slug?: string | null) {
     const rows = (await this.sql`
-      INSERT INTO direct_links (name, downloads, speed, file_id)
-      VALUES (${name}, 0, ${speed}, ${fileId})
+      INSERT INTO direct_links (name, downloads, speed, file_id, slug)
+      VALUES (${name}, 0, ${speed}, ${fileId}, ${slug ?? null})
       RETURNING *
     `) as Record<string, unknown>[];
-    const r = rows[0]!;
+    return this.normalize(rows[0]!);
+  }
+
+  private normalize(r: Record<string, unknown>) {
     return {
       id: toNum(r.id),
       created_at: toDate(r.created_at) ?? new Date(),
@@ -2132,7 +2128,17 @@ export class DirectLinkRepo {
       downloads: toNum(r.downloads),
       speed: toNum(r.speed),
       file_id: toNum(r.file_id),
+      slug: r.slug == null ? null : String(r.slug),
     };
+  }
+
+  /** 按短链码查直链（/d/<slug>）。 */
+  async bySlug(slug: string) {
+    const rows = (await this.sql`
+      SELECT * FROM direct_links WHERE slug = ${slug} AND deleted_at IS NULL LIMIT 1
+    `) as Record<string, unknown>[];
+    const r = rows[0];
+    return r ? this.normalize(r) : null;
   }
 
   async byId(id: number) {
@@ -2140,15 +2146,14 @@ export class DirectLinkRepo {
       SELECT * FROM direct_links WHERE id = ${id} AND deleted_at IS NULL LIMIT 1
     `) as Record<string, unknown>[];
     const r = rows[0];
-    if (!r) return null;
-    return {
-      id: toNum(r.id),
-      created_at: toDate(r.created_at) ?? new Date(),
-      name: String(r.name ?? ''),
-      downloads: toNum(r.downloads),
-      speed: toNum(r.speed),
-      file_id: toNum(r.file_id),
-    };
+    return r ? this.normalize(r) : null;
+  }
+
+  /** 更新直链的短码。唯一索引保证冲突会抛错，由调用方转成友好提示。 */
+  async updateSlug(id: number, slug: string | null): Promise<void> {
+    await this.sql`
+      UPDATE direct_links SET slug = ${slug}, updated_at = now() WHERE id = ${id}
+    `;
   }
 
   async incrementDownloads(id: number): Promise<void> {

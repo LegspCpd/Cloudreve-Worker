@@ -11,6 +11,8 @@
  *   /api/v4/workflow/* 任务流（打包 / 远程下载）
  *   /s/:id             分享短链（302）
  *   /f/:id/:name       文件直链（302）
+ *   /f/d/:id/:name     强制下载直链（302）
+ *   /d/:slug           随机/自定义短链（302 到文件直链）
  *
  * 本 Worker 只提供后端；前端一律用官方前端（见下方「前端」一节）。
  * 所有业务错误都以 HTTP 200 + `{code, msg}` 返回，与原版一致。
@@ -19,7 +21,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Context } from 'hono';
 import type { Env } from './env';
-import { appContext, ctxOf, securityHeaders, type AppBindings } from './middleware/app';
+import { appContext, ctxOf, securityHeaders, type AppBindings, type AppRequest } from './middleware/app';
 import { cachePublicAnon, cachePublicAnonStore } from './middleware/cachePublic';
 import { cacheAuthed } from './middleware/cacheAuthed';
 import { fail, ok } from './lib/response';
@@ -350,6 +352,7 @@ const contentCors = cors({
 
 app.use('/api/v4/file/content/*', contentCors);
 app.use('/f/*', contentCors);
+app.use('/d/*', contentCors);
 
 // ---------------------------------------------------------------------------
 // 短链与直链
@@ -390,14 +393,37 @@ app.get('/s/:id/:password', (c) => {
  * 的真实地址；失败时**不是** 200 信封，而是 `c.JSON(404, envelope)`
  * （见 `routers/controllers/file.go`），这里照做。
  */
-app.get('/f/:id/:name', async (c) => {
+// 两个入口与上游 routers/router.go:251-254 一一对应：
+//   /f/:id/:name    普通直链
+//   /f/d/:id/:name  强制下载（前端「强制下载」勾选后就是把 /f/ 换成 /f/d/）
+// 漏了后者时前端生成的链接一律 404「页面不存在」（2026-11-21 实测）。
+const permLinkHandler = async (c: AppRequest) => {
   const ctx = ctxOf(c);
   const service = new FileSystemService(ctx);
   const download = new DownloadService(ctx, service);
   try {
-    const target = await download.visitDirectLink(c.req.param('id'));
+    const target = await download.visitDirectLink(c.req.param('id') ?? '');
     // 上游 PR #3524：禁止客户端缓存重定向。否则属主权限被撤销后，访问过
     // 的浏览器仍可凭缓存的 302 跳到旧签名地址，绕过服务端的重新校验。
+    c.header('Cache-Control', 'no-store');
+    return c.redirect(target, 302);
+  } catch (e) {
+    return fail(c, e, 404);
+  }
+};
+app.get('/f/:id/:name', permLinkHandler);
+app.get('/f/d/:id/:name', permLinkHandler);
+
+/**
+ * 短链 `/d/<slug>`：固定前缀 + 随机/自定义码，不泄露文件名与目录。
+ * 校验属主权限后 302 到文件直链（复用 /f/ 的全套校验），行为与上游 /f/ 一致。
+ */
+app.get('/d/:slug', async (c: AppRequest) => {
+  const ctx = ctxOf(c);
+  const service = new FileSystemService(ctx);
+  const download = new DownloadService(ctx, service);
+  try {
+    const target = await download.visitShortLink(c.req.param('slug') ?? '');
     c.header('Cache-Control', 'no-store');
     return c.redirect(target, 302);
   } catch (e) {
