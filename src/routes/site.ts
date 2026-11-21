@@ -358,6 +358,12 @@ siteRoutes.get('/archive-status', async (c) => {
  * 无鉴权：只暴露**条数**与**清单**，不含任何业务数据值。
  */
 siteRoutes.get('/cache-status', async (c) => {
+  // 只给管理员：响应暴露各 KV 角色的缓存清单与条数，等于把内部结构送给任何
+  // 人（便于针对性打缓存失效点）。原注释写的「无鉴权」是早期调试遗留。
+  const ctx = ctxOf(c);
+  if (!ctx.user || !ctx.isAdmin) {
+    return fail(c, Err.loginRequired());
+  }
   c.header('Cache-Control', 'no-cache');
   const env = c.env;
   const q = new URL(c.req.url).searchParams;
@@ -388,9 +394,7 @@ siteRoutes.get('/cache-status', async (c) => {
     note: '清理只覆盖 purge=true 的条目；自举标记（flag 角色）永不清理，否则会触发站点重新自举。',
   };
 
-  // refresh / purge 会打库、清 KV，匿名高频调用就是现成的 DoS 放大器。
-  // 只读查询保持匿名，写操作要求管理员。
-  const ctx = ctxOf(c);
+  // 整个端点都已要求管理员（见函数开头），写操作沿用同一身份判断
   const canWriteOps = !!ctx.user && !!ctx.isAdmin;
   if (q.get('refresh') === '1' && canWriteOps) {
     const warmed = await warmAllCaches(env);
