@@ -37,6 +37,7 @@ import {
   CodeMetaMismatch,
   CodeObjectExist,
   CodeOwnerOnly,
+  CodeParamErr,
   CodePolicyNotAllowed,
   CodeRootProtected,
   CodeStaleVersion,
@@ -746,9 +747,12 @@ export class UploadService {
       encMeta: encMetaJson,
     });
 
+    // Content-Length 是客户端说的，不能信：声明小值、实际发大流，就能
+    // 绕过配额记账（容量按 length 预占，实际写入却是整条流）。包一层精确
+    // 长度断言，多了立刻中断、少了整条请求失败，绝不留「记账与实际不符」的实体。
     await driver.put(
       { savePath, fileName: file.name, size: length, mimeType, overwrite: false },
-      putBody,
+      exactLengthStream(putBody, length),
       length,
     );
 
@@ -901,3 +905,48 @@ export function shouldRelayByPolicy(policy: StoragePolicyRow): boolean {
 
 export type { EntityRow, FileRow };
 export type { UploadedPart };
+
+/**
+ * 把流包成「必须正好 expected 字节」的流。
+ *
+ * 用途见 `overwriteContent`：写入长度直接决定容量记账，而 `Content-Length`
+ * 完全由客户端控制。少了整条失败，多了立刻中断（并 cancel 上游，避免继续读）。
+ * AES-CTR 密文与明文等长，所以加密后再包一层不影响长度断言。
+ */
+function exactLengthStream(
+  body: ReadableStream<Uint8Array>,
+  expected: number,
+): ReadableStream<Uint8Array> {
+  const reader = body.getReader();
+  let seen = 0;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        if (seen !== expected) {
+          controller.error(
+            new AppError(
+              CodeParamErr,
+              `Request body length mismatch: declared ${expected}, received ${seen}`,
+            ),
+          );
+          return;
+        }
+        controller.close();
+        return;
+      }
+      seen += value.byteLength;
+      if (seen > expected) {
+        await reader.cancel().catch(() => undefined);
+        controller.error(
+          new AppError(CodeParamErr, 'Request body exceeds the declared Content-Length'),
+        );
+        return;
+      }
+      controller.enqueue(value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+}

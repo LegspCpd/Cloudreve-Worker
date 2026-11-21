@@ -22,6 +22,7 @@ import {
   AppError,
   CodeIncorrectPassword,
   CodeRateLimited,
+  CodeFeatureNotEnabled,
   CodeInsufficientCredit,
   CodeNoPermissionErr,
   CodeNotFound,
@@ -44,6 +45,10 @@ export interface ShareCreateParams {
   show_readme?: boolean;
   /** 付费分享价格（积分）。省略或 <=0 表示免费分享。 */
   score?: number;
+  /** 禁止下载：分享页不给下载入口，下载接口拒绝。 */
+  disable_download?: boolean;
+  /** 允许访客写入：上传 / 新建目录 / 删除 / 重命名（限分享子树内）。 */
+  writable?: boolean;
 }
 
 export interface ShareResponse {
@@ -71,6 +76,10 @@ export interface ShareResponse {
   is_private?: boolean;
   password?: string;
   share_view?: boolean;
+  /** 禁止下载（仅属主可见） */
+  disable_download?: boolean;
+  /** 允许访客写入（仅属主可见） */
+  writable?: boolean;
   source_uri?: string;
   /** 付费分享价格（积分）。0 表示免费。 */
   score?: number;
@@ -153,6 +162,8 @@ export class ShareService {
       props: {
         share_view: params.share_view === true,
         show_read_me: params.show_readme === true,
+        disable_download: params.disable_download === true,
+        writable: params.writable === true,
       },
     });
 
@@ -218,6 +229,8 @@ export class ShareService {
       props: {
         share_view: params.share_view === true,
         show_read_me: params.show_readme === true,
+        disable_download: params.disable_download === true,
+        writable: params.writable === true,
       },
     });
 
@@ -521,6 +534,8 @@ export class ShareService {
     if (isOwner) {
       res.is_private = Boolean(share.password);
       res.share_view = share.props?.share_view === true;
+      res.disable_download = share.props?.disable_download === true;
+      res.writable = share.props?.writable === true;
       if (includeSource && share.file_shares) {
         const file = await this.ctx.files.byId(share.file_shares);
         if (file) {
@@ -698,8 +713,34 @@ export class ShareService {
       }
     }
 
+    // 「禁止下载」的分享同样不能转存 —— 转存后从自己的空间下载就绕过了限制
+    if (share.props?.disable_download === true) {
+      throw new AppError(CodeNoPermissionErr, 'Download is disabled for this share');
+    }
+    // 限次分享：已经用完了就不许再转存（resolveShareSource 只判分享有效性）
+    if (share.remain_downloads !== null && share.remain_downloads <= 0) {
+      throw new AppError(CodeRateLimited, 'Download limit for this share has been reached');
+    }
+
     if (file!.owner_id === user.id) {
       throw new AppError(CodeSaveOwnShare, 'Cannot save your own share');
+    }
+    // 转存会复制实体引用、实际占用目标用户容量，必须真记账。
+    // 用原子预占而不是 assertCapacity：后者读的是缓存里的 usedStorage，
+    // 并发转存能一起通过检查（和上传链路同款问题）。
+    if (file!.type === FileType.File && file!.size > 0) {
+      const quotaLimit = this.ctx.maxStorage ?? 0;
+      const reserved = await this.ctx.users.reserveStorage(
+        user.id,
+        Number(file!.size),
+        quotaLimit > 0 ? quotaLimit : null,
+      );
+      if (!reserved) {
+        throw new AppError(
+          CodeFeatureNotEnabled,
+          'Saving this file would exceed your storage quota',
+        );
+      }
     }
 
     const dst = URI.parse(dstUri);
@@ -738,7 +779,8 @@ export class ShareService {
     }
 
     // 转存计入下载量
-    await this.ctx.shares.incrementDownloads(share.id, 0);
+    // 转存扣一次下载配额（原来传 0，限次分享等于无限次拷贝）
+    await this.ctx.shares.incrementDownloads(share.id, 1);
   }
 
   // -------------------------------------------------------------------------

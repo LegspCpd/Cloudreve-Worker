@@ -28,6 +28,7 @@ import {
 } from '../lib/edgeCacheAuth';
 import { withHeaders } from '../lib/edgeCache';
 
+
 type Bindings = { Bindings: import('../env').Env };
 
 interface CacheRule {
@@ -85,7 +86,10 @@ export function cacheAuthed(): MiddlewareHandler<Bindings> {
         const hash = await authHash(header);
         const epoch = await getAuthEpoch(c.env, hash);
         const hit = await edgeAuthCacheMatch(c, hash, epoch);
-        if (hit) {
+        // 命中前必须确认本次请求真的解析出了用户。封禁/删号/access token 过期时
+        // appContext 会把 user 留空，但 Authorization 串没变、缓存键也没变 ——
+        // 只看 header 就回缓存，等于封禁要等 TTL 才生效。
+        if (hit && (c.get("ctx" as never) as { user?: unknown } | undefined)?.user) {
           const correlationId = c.req.header('X-Correlation-ID') ?? crypto.randomUUID();
           // cache.match 返回的响应头只读，改之前先复制
           return withHeaders(hit, {

@@ -62,6 +62,16 @@ const UploadDownloadSection = () => {
     [setGroup],
   );
 
+  const onDavReadonlyChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setGroup((p: GroupEnt) => ({
+        ...p,
+        settings: { ...p.settings, dav_readonly: e.target.checked ? true : undefined },
+      }));
+    },
+    [setGroup],
+  );
+
   const onDownloadSpeedLimitChange = useCallback(
     (e: number) => {
       setGroup((p: GroupEnt) => ({ ...p, speed_limit: e ? e : undefined }));
@@ -141,6 +151,23 @@ const UploadDownloadSection = () => {
                       label={t("group.redirectedSource")}
                     />
                     <NoMarginHelperText>{t("group.redirectedSourceDes")}</NoMarginHelperText>
+                  </FormControl>
+                </SettingForm>
+                {/* 组级 WebDAV 只读：组内所有 DAV 账号无论怎么建都只能读 */}
+                <SettingForm lgWidth={5}>
+                  <FormControl fullWidth>
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={values?.settings?.dav_readonly ?? false}
+                          onChange={onDavReadonlyChange}
+                        />
+                      }
+                      label="WebDAV 只读"
+                    />
+                    <NoMarginHelperText>
+                      开启后该组所有 WebDAV 账号只能读取，不能上传/删除/重命名。
+                    </NoMarginHelperText>
                   </FormControl>
                 </SettingForm>
               </Stack>

@@ -65,6 +65,8 @@ shareRoutes.put('/', async (c) => {
       share_view: body.share_view as boolean | undefined,
       show_readme: body.show_readme as boolean | undefined,
       score: body.score as number | undefined,
+      disable_download: body.disable_download as boolean | undefined,
+      writable: body.writable as boolean | undefined,
     });
     // 原版创建分享的 data 是字符串
     return ok(c, url);
@@ -90,6 +92,8 @@ shareRoutes.post('/:id', async (c) => {
       share_view: body.share_view as boolean | undefined,
       show_readme: body.show_readme as boolean | undefined,
       score: body.score as number | undefined,
+      disable_download: body.disable_download as boolean | undefined,
+      writable: body.writable as boolean | undefined,
     });
     return ok(c, url);
   } catch (e) {

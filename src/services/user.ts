@@ -32,6 +32,7 @@ import {
   Err,
 } from '../lib/errors';
 import { checkPassword, digestPassword } from '../lib/crypto';
+import { md5 } from '../lib/md5';
 import { hashUserState, RevokeTokenPrefix, type Claims } from '../lib/jwt';
 import { randomString } from '../lib/crypto';
 import { generateTotpSecret, validateTotp } from '../lib/totp';
@@ -904,8 +905,10 @@ export class UserService {
       return `${base}/api/v4/user/avatar/${this.ctx.codec.encodeUserID(user.id)}`;
     }
     const server = this.ctx.settings.get('gravatar_server', 'https://www.gravatar.com/');
-    // 与原版一致：用邮箱的 MD5 取头像，这里退化为邮箱本身（不引 MD5 依赖）
-    return `${server.replace(/\/+$/, '')}/avatar/${encodeURIComponent(user.email)}?d=mp`;
+    // 必须用邮箱的 MD5（gravatar 标准就是这么算的）。原来直接把邮箱拼进 URL，
+    // 而 /user/info/:id 是公开接口 —— 匿名就能批量拿到全站（含管理员）邮箱。
+    const digest = md5(user.email.trim().toLowerCase());
+    return `${server.replace(/\/+$/, '')}/avatar/${digest}?d=mp`;
   }
 
   /** 上传头像到 R2。 */

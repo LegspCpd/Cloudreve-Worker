@@ -30,6 +30,8 @@ export function createOrUpdateShareLink(
       password: setting.password,
       share_view: setting.share_view,
       show_readme: setting.show_readme,
+      disable_download: setting.disable_download,
+      writable: setting.writable,
       downloads: setting.downloads && setting.downloads_val.value > 0 ? setting.downloads_val.value : undefined,
       expire: setting.expires && setting.expires_val.value > 0 ? setting.expires_val.value : undefined,
       score: setting.score && setting.score > 0 ? setting.score : undefined,

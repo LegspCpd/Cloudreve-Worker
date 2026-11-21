@@ -210,6 +210,33 @@ try {
   check('sanitize 仍拒绝路径穿越', safeEntryPath('../evil.txt', true) === null);
   check('sanitize 仍拒绝绝对路径', safeEntryPath('/etc/passwd', true) === null);
   check('sanitize 保留正常名字', JSON.stringify(safeEntryPath('普通/文件.txt', true)) === '["普通","文件.txt"]');
+
+  console.log('\n[11] safeContentType（上传类型不可信，防存储型 XSS）');
+  const dispBundle = path.join(outDir, 'disposition2.mjs');
+  await build({
+    entryPoints: [path.join(ROOT, 'src/lib/disposition.ts')],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node20',
+    outfile: dispBundle,
+    logLevel: 'silent',
+  });
+  const { safeContentType } = await import(`file://${dispBundle}`);
+  const html = safeContentType('text/html', 'a.html');
+  check('HTML 降级为纯文本', html.contentType === 'text/plain; charset=utf-8');
+  check('HTML 强制附件下载', html.forceAttachment === true);
+  check('HTML 带 nosniff', html.extraHeaders['X-Content-Type-Options'] === 'nosniff');
+  const js = safeContentType('application/javascript', 'x.bin');
+  check('JS 也降级', js.contentType === 'text/plain; charset=utf-8' && js.forceAttachment);
+  const svg = safeContentType('image/svg+xml', 'a.svg');
+  check('SVG 保留图片类型', svg.contentType === 'image/svg+xml');
+  check(
+    'SVG 加 CSP sandbox（直接打开时脚本被隔离）',
+    String(svg.extraHeaders['Content-Security-Policy'] ?? '').includes('sandbox'),
+  );
+  const png = safeContentType('image/png', 'a.png');
+  check('普通图片不受影响', png.contentType === 'image/png' && !png.forceAttachment);
 } catch (e) {
   failed += 1;
   console.error('\n  ERROR', e instanceof Error ? e.message : e);

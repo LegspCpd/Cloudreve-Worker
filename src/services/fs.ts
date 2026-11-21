@@ -421,6 +421,38 @@ export class FileSystemService {
    *   3. 密码：`share.password != "" && share.password != uri.password` 且非本人 → 40069；
    *   4. 非本人访问需要 `GroupPermissionShareDownload`，匿名则报 40088。
    */
+  /**
+   * 当前请求命中的可写分享（`share` 文件系统专用）。
+   *
+   * 分享链接允许访客写入时，写操作以**属主身份**执行、路径限制在该分享的
+   * 子树内（share URI 的 elements 天然是相对分享根的，走不到外面）。
+   * 非可写分享保持 null，写方法会显式拒绝。
+   */
+  private activeShare: { id: number; ownerId: number; writable: boolean } | null = null;
+
+  /** 写操作的实际执行者：可写分享下是属主，否则是当前登录用户。 */
+  private actorId(): number {
+    if (this.activeShare) return this.activeShare.ownerId;
+    return this.ctx.requireUser().id;
+  }
+
+  /**
+   * 分享文件系统的写操作闸门。
+   *
+   * ⚠️ 不能只依赖前端不上传按钮：API 可以直接调。这里对每个写入口显式校验
+   * 「当前 URI 属于一个已通过密码校验、且开了 writable 的分享」。
+   * 返回属主 id（新身份），非分享 URI 返回 null。
+   */
+  private assertShareWritable(uri: URI): number | null {
+    if (uri.fsType !== FileSystemType.Share) return null;
+    const shareId = uri.id ? this.ctx.codec.decodeShareID(uri.id) : null;
+    const active = this.activeShare;
+    if (!shareId || !active || active.id !== shareId || !active.writable) {
+      throw new AppError(CodeNoPermissionErr, 'This share is read-only');
+    }
+    return active.ownerId;
+  }
+
   private async resolveShare(uri: URI): Promise<FileRow | null> {
     if (!uri.id) throw Err.shareNotFound();
     const shareId = this.ctx.codec.decodeShareID(uri.id);
@@ -491,6 +523,16 @@ export class FileSystemService {
     // 根 URI 返回文件本身；唯一一段路径 == 文件名时也返回文件（前端拿
     // `cloudreve://<hash>[@:pwd]@share/<文件名>` 请求文件信息/下载/预览），
     // 其余子路径一律不存在。
+    // 记下这次请求命中的分享，供写方法的身份切换与可写校验使用。
+    // 只在这里设：所有 share 类型的读写都要先过 resolveShare，等于统一入口。
+    this.activeShare = {
+      id: share.id,
+      // 属主行在 infoBundle 里可能为空（账号已删）：那种情况分享本来就失效，
+      // 这里给 -1 让后续写操作必然 assertOwner 失败，不会误用别人的身份。
+      ownerId: owner?.id ?? -1,
+      writable: share.props?.writable === true,
+    };
+
     if (root!.type === FileType.File) {
       if (uri.elements.length === 0) return root!;
       if (uri.elements.length === 1 && uri.elements[0] === root!.name) return root!;
@@ -1203,15 +1245,18 @@ export class FileSystemService {
   // -------------------------------------------------------------------------
 
   async rename(uri: URI, newName: string, expectedId?: number | null): Promise<FileResponse> {
-    const user = this.ctx.requireUser();
+    // ⚠️ 顺序：先 mustResolve（它会走 resolveShare 把 activeShare 填好），
+    // 再 assertShareWritable。反过来永远读到 null → 可写分享恒 403。
     const file = await this.mustResolve(uri);
+    const shareOwnerId = this.assertShareWritable(uri);
+    const userId = shareOwnerId ?? this.ctx.requireUser().id;
     // 上游 issue #3565：客户端超时重试时，旧请求可能打到「后来占用同一路径的
     // 新文件」上。调用方若带了发起时的文件 id，就必须一致才动手。
     if (expectedId != null && expectedId !== file.id) {
       throw Err.param('Source file changed since the request was made');
     }
     if (this.isRootFolder(file)) throw new AppError(CodeRootProtected, 'Cannot rename root folder');
-    this.assertOwner(file, user.id);
+    this.assertOwner(file, userId);
 
     const nameError = validateName(newName);
     if (nameError) throw new AppError(CodeIllegalObjectName, nameError);
@@ -1232,7 +1277,7 @@ export class FileSystemService {
       );
     }
     notifyFsEvent(this.ctx, updated ?? file, 'rename', file.name, updated?.name ?? newName);
-    logAudit(this.ctx, 'file_rename', user.id, { from: file.name, to: updated?.name ?? newName });
+    logAudit(this.ctx, 'file_rename', userId, { from: file.name, to: updated?.name ?? newName });
     return this.buildFileResponse(updated!, { owned: true });
   }
 
@@ -1577,9 +1622,11 @@ export class FileSystemService {
   // -------------------------------------------------------------------------
 
   async delete(uris: URI[], options: { unlinkOnly?: boolean; skipSoftDelete?: boolean } = {}): Promise<void> {
-    const user = this.ctx.requireUser();
+    // 分享删除走属主身份，且**只允许进回收站**：彻底删除是不可逆的破坏性操作，
+    // 不能通过一条分享链接触发（属主自己删的才走 purge 分支）。
+    const anyShare = uris.some((u) => u.fsType === FileSystemType.Share);
 
-    if (options.unlinkOnly) {
+    if (options.unlinkOnly && !anyShare) {
       this.ctx.requireGroupPermission(GroupPermission.AdvanceDelete, 'Advanced delete is not allowed');
     }
 
@@ -1587,23 +1634,37 @@ export class FileSystemService {
 
     for (const uri of uris) {
       try {
+        // 同 rename：先解析（填 activeShare）再判可写
         const file = await this.mustResolve(uri);
+        const shareOwnerId = this.assertShareWritable(uri);
+        const userId = shareOwnerId ?? this.ctx.requireUser().id;
         if (this.isRootFolder(file)) throw new AppError(CodeRootProtected, 'Cannot delete root folder');
-        this.assertOwner(file, user.id);
+        this.assertOwner(file, userId);
+
+        if (shareOwnerId != null) {
+          // 分享入口：已进回收站的、或显式要求彻底删除的，一律拒绝
+          if (this.isInTrash(file) || options.skipSoftDelete || options.unlinkOnly) {
+            throw new AppError(CodeNoPermissionErr, 'Permanent deletion is not allowed via share link');
+          }
+          await this.softDeleteFile(file);
+          logAudit(this.ctx, 'move_to_trash', userId, { name: file.name, via_share: true });
+          notifyFsEvent(this.ctx, file, 'delete', file.name, '');
+          continue;
+        }
 
         if (this.isInTrash(file)) {
           // 已在回收站中的再删一次 = 彻底删除
           await this.purge(file);
-          logAudit(this.ctx, 'delete_file', user.id, { name: file.name, purge: true });
+          logAudit(this.ctx, 'delete_file', userId, { name: file.name, purge: true });
           continue;
         }
 
         if (options.skipSoftDelete) {
           await this.purge(file);
-          logAudit(this.ctx, 'delete_file', user.id, { name: file.name, purge: true });
+          logAudit(this.ctx, 'delete_file', userId, { name: file.name, purge: true });
         } else {
           await this.softDeleteFile(file);
-          logAudit(this.ctx, 'move_to_trash', user.id, { name: file.name });
+          logAudit(this.ctx, 'move_to_trash', userId, { name: file.name });
         }
         notifyFsEvent(this.ctx, file, 'delete', file.name, '');
       } catch (e) {
@@ -1934,6 +1995,17 @@ export class FileSystemService {
   }
 
   /** 所有权校验：非本人所有则需要管理员/忽略归属权限。 */
+  /**
+   * 路由层可用的属主校验（元数据/视图这类不经过 fs 写方法的入口）。
+   *
+   * ⚠️ 分享的 `mustResolve` 只保证「分享有效、密码对、有 ShareDownload」，
+   * **不保证属主**。只读分享下拿到分享 URI 就能改属主文件的 metadata/view，
+   * 是实打实的写越权 —— 这些入口必须自己再判一次。
+   */
+  assertOwnerAccess(file: FileRow): void {
+    this.assertOwner(file, this.ctx.requireUser().id);
+  }
+
   private assertOwner(file: FileRow, userId: number): void {
     if (file.owner_id === userId) return;
     if (this.ctx.isAdmin) return;

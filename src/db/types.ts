@@ -228,6 +228,12 @@ export interface GroupSetting {
   max_walked_files?: number;
   trash_retention?: number;
   redirected_source?: boolean;
+  /**
+   * 用户组级 WebDAV 只读（对应上游 issue #3409）。
+   * 账号自身的 readonly 选项之外再加一道组级闸门：组开了只读，组内所有
+   * DAV 账号无论怎么建都只能读。缺省 false。
+   */
+  dav_readonly?: boolean;
 }
 
 export interface PolicySetting {
@@ -291,6 +297,21 @@ export interface FileProps {
 export interface ShareProps {
   share_view?: boolean;
   show_read_me?: boolean;
+  /**
+   * 禁止下载（官方 Pro「preview only」）。开启后分享页不再提供下载入口，
+   * 下载接口直接拒绝。
+   *
+   * ⚠️ 这不是真正的 DRM：浏览器能预览就说明数据已经到客户端，抓包/开发者
+   * 工具仍可保存（官方 issue #2675 也是这个结论）。它的作用是「不给下载按钮、
+   * 拒绝下载请求」，防的是普通用户的顺手保存，不是防技术手段。
+   */
+  disable_download?: boolean;
+  /**
+   * 允许访客写入（官方 Pro「Modify and delete files via share link」）。
+   * 开启后拿到分享链接的人可以上传/新建目录/删除/重命名。
+   * 写入以分享属主身份执行，路径严格限制在分享子树内。
+   */
+  writable?: boolean;
 }
 
 export interface EntityProps {

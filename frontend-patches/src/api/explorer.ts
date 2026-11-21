@@ -77,6 +77,10 @@ export interface Share {
   expires?: string;
   is_private?: boolean;
   share_view?: boolean;
+  /** 禁止下载（仅属主可见） */
+  disable_download?: boolean;
+  /** 允许访客写入（仅属主可见） */
+  writable?: boolean;
   remain_downloads?: number;
   created_at?: string;
   url: string;
@@ -312,6 +316,10 @@ export interface ShareCreateService {
   expire?: number;
   share_view?: boolean;
   show_readme?: boolean;
+  /** 禁止下载 */
+  disable_download?: boolean;
+  /** 允许访客写入 */
+  writable?: boolean;
   /** 付费分享价格（积分）。省略或 <=0 表示免费分享。 */
   score?: number;
 }

@@ -66,7 +66,7 @@ import {
   Err,
   RangeNotSatisfiable,
 } from '../lib/errors';
-import { attachmentDisposition } from '../lib/disposition';
+import { attachmentDisposition, safeContentType } from '../lib/disposition';
 import { throttleStream } from '../lib/throttle';
 import { sseClientId } from '../lib/sse';
 
@@ -524,7 +524,12 @@ const serveContent = async (c: AppRequest) => {
     );
 
     const headers = new Headers();
-    headers.set('Content-Type', content.contentType ?? 'application/octet-stream');
+    // 客户端声明的 Content-Type 不可信：HTML/SVG 同源直出就是存储型 XSS。
+    // 归一化后，可执行类型降级为纯文本 + attachment，SVG 加 CSP sandbox。
+    const safe = safeContentType(content.contentType, name);
+    headers.set('Content-Type', safe.contentType);
+    for (const [k, v] of Object.entries(safe.extraHeaders)) headers.set(k, v);
+    if (safe.forceAttachment) headers.set('Content-Disposition', attachmentDisposition(name));
     headers.set('Accept-Ranges', 'bytes');
     if (content.contentRange) {
       headers.set('Content-Range', content.contentRange);
@@ -690,7 +695,14 @@ fileRoutes.patch('/metadata', async (c) => {
     const service = new FileSystemService(ctx);
     for (const raw of body.uris) {
       const file = await service.mustResolve(URI.parse(raw));
+      // 分享的 mustResolve 只验「分享有效/密码/购买」，不验属主。
+      // 不加这一行，拿到任意只读分享链接就能改属主文件的元数据（写越权）。
+      service.assertOwnerAccess(file);
       for (const patch of body.patches) {
+        // sys: 是内部保留键（restore_uri / upload_session_id 等），客户端禁写
+        if (typeof patch.key === 'string' && patch.key.startsWith('sys:')) {
+          return fail(c, Err.param('Reserved metadata keys cannot be modified'));
+        }
         if (patch.remove) {
           await ctx.metadata.remove(file.id, patch.key);
         } else {
@@ -716,6 +728,8 @@ fileRoutes.patch('/view', async (c) => {
   try {
     const service = new FileSystemService(ctx);
     const file = await service.mustResolve(URI.parse(body.uri));
+    // 收藏视图是个人配置：必须属主，不能通过分享链接改属主的
+    service.assertOwnerAccess(file);
     const props = { ...(file.props ?? {}) };
     if (body.view) props.view = body.view as never;
     await ctx.files.patchProps(file.id, props as Record<string, unknown>);

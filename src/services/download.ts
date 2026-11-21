@@ -26,6 +26,7 @@ import {
   CodeEncryptError,
   CodeGroupNotAllowed,
   CodeInvalidSign,
+  CodeNoPermissionErr,
   CodeOwnerOnly,
   CodeSignExpired,
   Err,
@@ -129,6 +130,15 @@ export class DownloadService {
     const expiresAt = now + (ttl > 0 ? ttl : 3600);
 
     for (const uri of uris) {
+      // 分享「禁止下载」：真下载请求直接拒。预览（download 不为 true）仍放行，
+      // 因为浏览器要先拿到数据才能显示 —— 见 ShareProps.disable_download 的说明。
+      if (options.download === true && uri.fsType === FileSystemType.Share && uri.id) {
+        const shareId = this.ctx.codec.decodeShareID(uri.id);
+        const share = shareId !== null ? await this.ctx.shares.byId(shareId) : null;
+        if (share?.props?.disable_download === true) {
+          throw new AppError(CodeNoPermissionErr, 'Download is disabled for this share');
+        }
+      }
       const file = await this.fs.mustResolve(uri);
       if (file.type !== FileType.File) {
         throw new AppError(CodeFileNotFound, 'Cannot generate download URL for a folder');

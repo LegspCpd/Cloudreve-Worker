@@ -80,6 +80,10 @@ export interface ShareSetting {
   password?: string;
   share_view?: boolean;
   show_readme?: boolean;
+  /** 禁止下载：不给下载入口，下载接口拒绝（预览仍可看） */
+  disable_download?: boolean;
+  /** 允许访客写入：上传 / 新建目录 / 删除 / 重命名 */
+  writable?: boolean;
   downloads?: boolean;
   expires?: boolean;
   /** 是否启用付费分享（访客需支付积分才能下载）。 */
@@ -137,7 +141,17 @@ const ShareSettingContent = ({ setting, file, editing, onSettingChange }: ShareS
     setExpanded(isExpanded ? panel : undefined);
   };
 
-  const handleCheck = (prop: "is_private" | "share_view" | "show_readme" | "expires" | "downloads" | "paid") => () => {
+  const handleCheck = (
+    prop:
+      | "is_private"
+      | "share_view"
+      | "show_readme"
+      | "expires"
+      | "downloads"
+      | "paid"
+      | "disable_download"
+      | "writable",
+  ) => () => {
     if (!setting[prop]) {
       handleExpand(prop)(null, true);
     }
@@ -275,8 +289,43 @@ const ShareSettingContent = ({ setting, file, editing, onSettingChange }: ShareS
               <Trans i18nKey="application:modals.showReadmeDes" components={[<Code />]} />
             </AccordionDetails>
           </Accordion>
+          <Accordion expanded={expanded === "writable"} onChange={handleExpand("writable")}>
+            <AccordionSummary aria-controls="panel-writable" id="panel-writable-header">
+              <StyledListItemButton>
+                <ListItemIcon>
+                  <TableSettingsOutlined />
+                </ListItemIcon>
+                <ListItemText primary="允许访客上传与编辑" />
+                <ListItemSecondaryAction>
+                  <Checkbox checked={setting.writable} onChange={handleCheck("writable")} />
+                </ListItemSecondaryAction>
+              </StyledListItemButton>
+            </AccordionSummary>
+            <AccordionDetails>
+              开启后，拿到链接的人可以在该分享目录内上传文件、新建文件夹、删除和重命名。写入以你的身份执行，占用你的存储容量。
+            </AccordionDetails>
+          </Accordion>
         </>
       )}
+      <Accordion expanded={expanded === "disable_download"} onChange={handleExpand("disable_download")}>
+        <AccordionSummary aria-controls="panel-disable-download" id="panel-disable-download-header">
+          <StyledListItemButton>
+            <ListItemIcon>
+              <TableSettingsOutlined />
+            </ListItemIcon>
+            <ListItemText primary="禁止下载" />
+            <ListItemSecondaryAction>
+              <Checkbox
+                checked={setting.disable_download}
+                onChange={handleCheck("disable_download")}
+              />
+            </ListItemSecondaryAction>
+          </StyledListItemButton>
+        </AccordionSummary>
+        <AccordionDetails>
+          开启后不提供下载入口，下载请求会被拒绝。注意：能在浏览器里预览就说明数据已到达客户端，抓包仍可保存，这不是 DRM。
+        </AccordionDetails>
+      </Accordion>
       <Accordion expanded={expanded === "expires"} onChange={handleExpand("expires")}>
         <AccordionSummary aria-controls="panel1a-content" id="panel1a-header">
           <StyledListItemButton>

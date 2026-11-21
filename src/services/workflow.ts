@@ -662,7 +662,13 @@ export class WorkflowService {
     const target = await this.ctx.users.byIdWithGroup(targetId);
     if (!target) throw new AppError(404, 'Target user not found');
 
-    const policy = await this.ctx.policies.byId(args.policyId);
+    // ⚠️ 必须走「当前用户组允许的策略集」，不能只按 id 捞。
+    // 只查 policies.byId 的话，任何登录用户传一个别人的策略 id（含 OneDrive
+    // 等「列表即读」的策略）就能把别人的真实目录列出来 —— 跨租户读。
+    // 管理员做整站运维时用 targetUserId 指定目标用户，其可管理范围由 isAdmin 限。
+    const policy = this.ctx.isAdmin
+      ? await this.ctx.policies.byId(args.policyId)
+      : await this.ctx.assertPolicyAllowed(args.policyId);
     if (!policy) throw Err.policyNotAllowed();
     const driver = this.ctx.driverFor(policy);
     if (typeof driver.list !== 'function') {

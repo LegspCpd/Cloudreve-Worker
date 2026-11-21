@@ -146,9 +146,12 @@ davRoutes.use('*', async (c, next) => {
   if (!full) return c.body(null, 401);
   if (!permissionsOf(full.group).enabled(GroupPermission.WebDAV)) return c.body(null, 403);
 
-  // 只读账号禁写方法
+  // 只读账号禁写方法。两道闸门：账号自身设了只读，或所在用户组设了只读
+  // （组级是上游 issue #3409 的诉求 —— 管理员能一刀切，不用逐个账号改）。
   const opts = new BooleanSet(hit.account.options);
-  if (opts.enabled(DAV_OPT_READONLY) && WRITE_METHODS.has(method)) {
+  const groupReadonly = (full.group?.settings as { dav_readonly?: boolean } | null)
+    ?.dav_readonly === true;
+  if ((opts.enabled(DAV_OPT_READONLY) || groupReadonly) && WRITE_METHODS.has(method)) {
     return c.body(null, 403);
   }
 

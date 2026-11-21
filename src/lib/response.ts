@@ -69,6 +69,12 @@ export function fail(c: Context, err: unknown, status: 200 | 404 = 200): Respons
       // 文案要能塞进前端的 `数据库操作失败 ({{message}})` 模板里读通顺，
       // 所以写成名词短语、不带句号，也不直译驱动的英文原文。
       msg = 'upstream temporarily unavailable, please retry';
+    } else if (isProduction(c)) {
+      // 生产环境不能把驱动/DB 的英文原文回给客户端：那里面有表名、约束名、
+      // 桶名、AccessKeyId 片段，等于免费给攻击者做侦察。
+      // 原文仍然进日志与 correlation_id，排障不受影响。
+      msg = 'operation failed';
+      console.error('unhandled error', err);
     } else {
       msg = err.message;
     }

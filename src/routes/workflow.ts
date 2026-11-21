@@ -116,7 +116,7 @@ workflowRoutes.get('/', async (c) => {
   if (category === 'downloading') types = downloadTypes;
   else if (category === 'downloaded') types = downloadTypes;
 
-  const tasks = await ctx.tasks.listByUser({ userId: ctx.user!.id, pageSize, types });
+  const tasks = await ctx.tasks.listByUser({ userId: ctx.requireUser().id, pageSize, types });
   const filtered =
     category === 'downloaded' ? tasks.filter((t) => t.status === 'completed') : tasks;
 
@@ -137,7 +137,7 @@ workflowRoutes.get('/progress/:id', async (c) => {
   if (id === null) return fail(c, new AppError(CodeNotFound, 'Task not found'));
 
   const task = await ctx.tasks.byId(id);
-  if (!task || task.user_tasks !== ctx.user!.id) {
+  if (!task || task.user_tasks !== ctx.requireUser().id) {
     return fail(c, new AppError(CodeNotFound, 'Task not found'));
   }
 
@@ -254,7 +254,7 @@ workflowRoutes.patch('/download/:id', async (c) => {
   const id = ctx.codec.decodeTaskID(c.req.param('id'));
   if (id === null) return fail(c, new AppError(CodeNotFound, 'Task not found'));
   const task = await ctx.tasks.byId(id);
-  if (!task || task.user_tasks !== ctx.user!.id) {
+  if (!task || task.user_tasks !== ctx.requireUser().id) {
     return fail(c, new AppError(CodeNotFound, 'Task not found'));
   }
   return ok(c);
@@ -266,7 +266,7 @@ workflowRoutes.delete('/download/:id', async (c) => {
   const id = ctx.codec.decodeTaskID(c.req.param('id'));
   if (id === null) return fail(c, new AppError(CodeNotFound, 'Task not found'));
   const task = await ctx.tasks.byId(id);
-  if (!task || task.user_tasks !== ctx.user!.id) {
+  if (!task || task.user_tasks !== ctx.requireUser().id) {
     return fail(c, new AppError(CodeNotFound, 'Task not found'));
   }
   if (task.status === 'queued' || task.status === 'processing') {
@@ -285,6 +285,12 @@ workflowRoutes.delete('/download/:id', async (c) => {
  */
 workflowRoutes.post('/import', async (c) => {
   const ctx = ctxOf(c);
+  // 导入是**管理端运维功能**（把某个存储后端上已有的目录挂进网盘），上游也只
+  // 在 admin 路由里暴露。普通用户能调的话，配合任意 policy_id 就能浏览别人的
+  // 存储桶内容 —— 跨租户读。
+  if (!ctx.isAdmin) {
+    return fail(c, new AppError(40037, 'Only administrator can import files'));
+  }
   const body = (await c.req.json().catch(() => ({}))) as {
     src?: string;
     dst?: string;
@@ -361,7 +367,7 @@ workflowRoutes.post('/rebuildFtsIndex', async (c) => {
     const taskType = 'full_text_rebuild';
 
     // 复用未完成的任务，没有就新建
-    let task = await ctx.tasks.findActiveByType(taskType, ctx.user!.id);
+    let task = await ctx.tasks.findActiveByType(taskType, ctx.requireUser().id);
     let state: {
       phase: 'nuke' | 'index';
       total: number;
@@ -385,7 +391,7 @@ workflowRoutes.post('/rebuildFtsIndex', async (c) => {
       if (!task) {
         task = await ctx.tasks.create({
           type: taskType,
-          userId: ctx.user!.id,
+          userId: ctx.requireUser().id,
           publicState: { summary: { phase: 'nuke', props: { total: 0, failed: 0 } } },
         });
       }
@@ -395,13 +401,13 @@ workflowRoutes.post('/rebuildFtsIndex', async (c) => {
       // 阶段一：清空旧索引 + 确保索引配置存在 + 统计可索引文件数
       await search.deleteAll();
       await search.ensureIndex();
-      state.total = await ctx.files.countIndexableFiles(ctx.user!.id, fts.tikaExts);
+      state.total = await ctx.files.countIndexableFiles(ctx.requireUser().id, fts.tikaExts);
       state.phase = 'index';
     }
 
     // 阶段二：推进一批
     const files = await ctx.files.listIndexableFiles({
-      ownerId: ctx.user!.id,
+      ownerId: ctx.requireUser().id,
       afterId: state.last_file_id,
       limit: REBUILD_BATCH,
       exts: fts.tikaExts,
