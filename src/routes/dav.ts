@@ -293,7 +293,7 @@ davRoutes.on('PROPFIND', '*', async (c) => {
   // 活动锁一次性取出（锁数量很少），每个资源按「覆盖关系」挂自己的 lockdiscovery：
   // 上级目录的 Depth:infinity 锁也会出现在子项的 lockdiscovery 里（RFC 4918 §6.1）。
   const kv = kvFor(ctx.env, 'upload');
-  const activeLocks = await loadLocks(kv);
+  const activeLocks = await loadLocks(kv, davAccountOf(c).owner_id);
   const recordCache = new Map<string, DavLock>();
   const lockDiscoveryFor = async (path: string): Promise<string> => {
     const covering = activeLocks.filter((l) => lockCovers(l.path, l.depth, path));
@@ -800,7 +800,10 @@ function ifAssertsToken(lists: IfList[], token: string): boolean {
 }
 
 /** 读全部活动锁（只读 metadata，不取值）。 */
-async function loadLocks(kv: KVNamespace): Promise<Array<DavLockMeta & { token: string }>> {
+async function loadLocks(
+  kv: KVNamespace,
+  principal?: number,
+): Promise<Array<DavLockMeta & { token: string }>> {
   const now = Date.now();
   const out: Array<DavLockMeta & { token: string }> = [];
   let cursor: string | undefined;
@@ -809,6 +812,9 @@ async function loadLocks(kv: KVNamespace): Promise<Array<DavLockMeta & { token: 
     for (const key of page.keys) {
       const meta = key.metadata as DavLockMeta | null;
       if (!meta || typeof meta.path !== 'string') continue;
+      // ⚠️ 锁必须按 principal 隔离：不隔离的话任何人 LOCK / 就能锁死全站写入，
+      // 而且 PROPFIND 会把别人的 lockroot/token 回给你。
+      if (principal !== undefined && meta.principal !== principal) continue;
       if (typeof meta.expiresAt === 'number' && meta.expiresAt <= now) continue;
       out.push({ token: key.name.slice(LOCK_KEY_PREFIX.length), ...meta });
     }
@@ -891,7 +897,7 @@ async function lockedWriteResponse(
 ): Promise<Response | null> {
   const ctx = ctxOf(c);
   const kv = kvFor(ctx.env, 'upload');
-  const locks = await loadLocks(kv);
+  const locks = await loadLocks(kv, davAccountOf(c).owner_id);
   if (locks.length === 0) return null;
 
   const lists = parseIfHeader(c.req.header('If'));
@@ -917,7 +923,7 @@ async function moveLockRoots(c: AppRequest, fromPath: string, toPath: string): P
   if (fromPath === toPath) return;
   const ctx = ctxOf(c);
   const kv = kvFor(ctx.env, 'upload');
-  const locks = await loadLocks(kv);
+  const locks = await loadLocks(kv, davAccountOf(c).owner_id);
   const prefix = fromPath === '/' ? '/' : `${fromPath}/`;
   for (const lock of locks) {
     if (lock.path !== fromPath && !lock.path.startsWith(prefix)) continue;
@@ -948,7 +954,7 @@ davRoutes.on('LOCK', '*', async (c) => {
     for (const list of lists) {
       for (const cond of list.conditions) if (!cond.not && cond.token) tokens.add(cond.token);
     }
-    const hit = (await loadLocks(kv)).find(
+    const hit = (await loadLocks(kv, davAccountOf(c).owner_id)).find(
       (lock) => tokens.has(lock.token) && lockCovers(lock.path, lock.depth, decodedPath(uri)),
     );
     if (!hit) return c.body(null, 412);
@@ -979,7 +985,7 @@ davRoutes.on('LOCK', '*', async (c) => {
   const isDir = isFolderRow(fs, file);
 
   const path = decodedPath(uri);
-  const existingLocks = await loadLocks(kv);
+  const existingLocks = await loadLocks(kv, davAccountOf(c).owner_id);
   const overlap = existingLocks.filter(
     (lock) => lockCovers(lock.path, lock.depth, path) || lockCovers(path, depth, lock.path),
   );
