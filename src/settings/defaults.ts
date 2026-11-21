@@ -283,6 +283,11 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   // 注册时为新用户在根目录创建的默认文件夹，JSON 字符串数组，元素为文件夹名。
   // 例：'["我的文档","我的图片","我的视频"]'。留空 "[]" 表示不创建。
   initial_files: '[]',
+  // 默认分享（edge 自建 Pro 功能，对标官方 Default Shares）：
+  // 新用户注册后自动出现在其「分享给我」里的分享，JSON 字符串数组，
+  // 元素为分享 hashid。复制成独立行（user_shares=新用户），原分享改/删不影响。
+  // 留空 "[]" 表示不挂载。
+  default_share_ids: '[]',
   // 审计日志事件开关（管理端「事件」页）：JSON map 事件名 → bool，缺省视为 true。
   audit_log_events: '{}',
 };

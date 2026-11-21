@@ -620,8 +620,18 @@ const VAS = () => {
               value={text("initial_files")}
               onChange={setText("initial_files")}
             />
+            <TextField
+              fullWidth
+              multiline
+              minRows={2}
+              label="默认分享（JSON 数组，填分享链接里的 ID）"
+              placeholder='["m5fM","aB3dE8"]'
+              value={text("default_share_ids")}
+              onChange={setText("default_share_ids")}
+            />
             <Typography variant="caption" color="text.secondary">
               站点公告以纯文本展示在页面顶部横幅；初始文件夹需为合法 JSON 字符串数组，新用户注册时在其根目录创建。
+              默认分享会复制到每个新用户的「分享给我」，复制时会去掉密码、过期时间和售价。
             </Typography>
           </Stack>
         </SettingSectionContent>

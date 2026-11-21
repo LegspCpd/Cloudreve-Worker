@@ -514,6 +514,9 @@ export class UserService {
     // 新用户初始文件夹（官方 Pro「新用户初始文件」的文件夹部分）：注册后在
     // 根目录建一批默认文件夹。失败不阻断注册 —— 最坏情况是新用户少了默认文件夹。
     await this.seedInitialFolders(user.id);
+    // 默认分享（官方 Pro「Default Shares」）：把站点配置的分享挂到新用户的
+    // 「分享给我」，注册完就能看到站方推荐的资源。失败不阻断注册。
+    await this.seedDefaultShares(user.id);
 
     logAudit(this.ctx, 'user_signup', user.id, { email: normalized });
     if (needActivation) {
@@ -557,6 +560,46 @@ export class UserService {
     } catch (e) {
       // 初始文件夹失败不该让注册整体失败（用户已经建好了）
       console.error('seedInitialFolders failed', e);
+    }
+  }
+
+  /**
+   * 给新用户挂「默认分享」（对标官方 Pro Default Shares）。
+   *
+   * 站点设置 `default_share_ids` 是一组分享 hashid。每个新用户注册后复制一份
+   * 独立的 shares 行（`user_shares = 新用户`），这样原分享被删/改不影响已经
+   * 注册的人，用户也能自己删掉不要的。
+   *
+   * 复制时强制清掉密码、过期时间与售价：默认分享是给所有新用户看的，
+   * 带密码等于谁都打不开，带过期/收费也会立刻失效。
+   */
+  private async seedDefaultShares(userId: number): Promise<void> {
+    const raw = this.ctx.settings.getJson<string[]>('default_share_ids', []);
+    if (!Array.isArray(raw) || raw.length === 0) return;
+    const ids: number[] = [];
+    for (const h of raw) {
+      const id = this.ctx.codec.decodeShareID(String(h ?? '').trim());
+      if (id !== null && !ids.includes(id)) ids.push(id);
+    }
+    if (ids.length === 0) return;
+    try {
+      for (const id of ids) {
+        const src = await this.ctx.shares.byId(id);
+        // 源分享已删/已失效、或本来就是给某个具体用户的，跳过
+        if (!src || !src.file_shares || src.user_shares) continue;
+        await this.ctx.shares.create({
+          fileId: src.file_shares,
+          userId,
+          password: null,
+          expires: null,
+          remainDownloads: null,
+          score: 0,
+          props: (src.props ?? {}) as Record<string, unknown>,
+        });
+      }
+    } catch (e) {
+      // 与初始文件夹同理：挂载失败不该让注册回滚
+      console.error('seedDefaultShares failed', e);
     }
   }
 
