@@ -1506,17 +1506,17 @@ ALTER TABLE direct_links ADD COLUMN IF NOT EXISTS slug TEXT;
 -- \u7528\u90E8\u5206\u552F\u4E00\u7D22\u5F15\uFF1A\u53EA\u7EA6\u675F\u975E\u7A7A slug\uFF0C\u7A7A\u503C\u4E0D\u4E92\u65A5\uFF08\u5B58\u91CF\u884C\u5168\u662F NULL\uFF09
 CREATE UNIQUE INDEX IF NOT EXISTS direct_links_slug ON direct_links (slug) WHERE slug IS NOT NULL;
 `;var Ww=`-- =============================================================================
--- 0020_remove_default_policy.sql \u2014\u2014 \u79FB\u9664\u64AD\u79CD\u7684\u300CR2 Default\u300D\u5B58\u50A8\u7B56\u7565
+-- 0021_remove_default_policy.sql \u2014\u2014 \u79FB\u9664\u64AD\u79CD\u7684\u300CR2 Default\u300D\u5B58\u50A8\u7B56\u7565
 --
--- \u81EA\u4E3E\u4E0D\u518D\u521B\u5EFA\u9ED8\u8BA4\u7B56\u7565\uFF0C\u4E5F\u4E0D\u518D\u7ED9\u7CFB\u7EDF\u7EC4\u786C\u7ED1\u7B56\u7565\u3002\u5B58\u91CF\u5E93\u91CC\u90A3\u6761\u7531\u65E7\u7248
--- provision/seed \u63D2\u5165\u7684 R2 Default\uFF08\u901A\u5E38\u662F id=1\uFF09\u5728\u8FD9\u91CC\u6E05\u6389\uFF1A
+-- \u81EA\u4E3E\u4E0D\u518D\u521B\u5EFA\u9ED8\u8BA4\u7B56\u7565\uFF0C\u4E5F\u4E0D\u518D\u7ED9\u7CFB\u7EDF\u7EC4\u786C\u7ED1\u7B56\u7565\u3002\u5B58\u91CF\u5E93\u91CC\u90A3\u4E9B\u7531\u65E7\u7248
+-- provision/seed \u63D2\u5165\u7684 R2 Default\uFF08\u901A\u5E38 id=1\uFF09\u5728\u8FD9\u91CC\u6E05\u6389\uFF1A
 --   1. \u89E3\u7ED1 groups / group_storage_policies / nodes\uFF1B
 --   2. \u6E05\u6389\u7528\u6237 settings \u91CC\u6307\u5411\u5B83\u7684 upload_policy_id\uFF1B
 --   3. \u8F6F\u5220\u7B56\u7565\u672C\u8EAB\uFF08\u4E0D\u7269\u7406\u5220\uFF0C\u907F\u514D\u8BEF\u4F24\u5386\u53F2\u5BA1\u8BA1/\u5F15\u7528\uFF09\u3002
 --
--- \u5B89\u5168\u95F8\uFF1A\u82E5\u5DF2\u6709 files / entities \u6302\u5728\u8FD9\u6761\u7B56\u7565\u4E0A\uFF0C\u6574\u7EC4\u64CD\u4F5C\u8DF3\u8FC7 \u2014\u2014 \u5426\u5219
--- \u6587\u4EF6\u4F1A\u5931\u53BB\u7B56\u7565\u5F52\u5C5E\uFF0C\u4E0B\u8F7D/\u7F29\u7565\u56FE\u76F4\u63A5 40035\u3002\u7B49\u7BA1\u7406\u5458\u628A\u6587\u4EF6\u8FC1\u8D70\u540E\u518D\u8DD1
--- \u4E00\u6B21\u540C\u6837\u7684\u8FC1\u79FB\uFF08\u6216\u624B\u52A8\u5220\u9664\uFF09\u5373\u53EF\u3002
+-- \u5B89\u5168\u95F8\u6309**\u6BCF\u6761\u7B56\u7565**\u5224\u65AD\uFF1A\u6709 files / entities \u6302\u7740\u7684\u7B56\u7565\u6574\u7EC4\u8DF3\u8FC7 \u2014\u2014
+-- \u5426\u5219\u6587\u4EF6\u4F1A\u5931\u53BB\u7B56\u7565\u5F52\u5C5E\uFF0C\u4E0B\u8F7D/\u7F29\u7565\u56FE\u76F4\u63A5 40035\u3002\u6CA1\u6709\u5F15\u7528\u7684\u540C\u540D\u7B56\u7565\u7167\u5220\uFF0C
+-- \u4E0D\u4F1A\u56E0\u4E3A\u53E6\u4E00\u6761\u7B56\u7565\u6709\u6587\u4EF6\u800C\u8DDF\u7740\u7559\u5728\u5E93\u91CC\u3002
 --
 -- \u5E42\u7B49\uFF1A\u8F6F\u5220\u540E target \u4E0D\u518D\u547D\u4E2D\uFF0C\u91CD\u653E\u4E3A\u7A7A\u64CD\u4F5C\u3002
 -- =============================================================================
@@ -1528,109 +1528,85 @@ WITH target AS (
     OR (id = 1 AND COALESCE(settings->>'relay', 'false') = 'true'
                 AND (access_key IS NULL OR access_key = ''))
   )
-), blocked AS (
-  SELECT 1
-  WHERE EXISTS (
-    SELECT 1 FROM files f JOIN target t ON f.storage_policy_files = t.id
-  ) OR EXISTS (
-    SELECT 1 FROM entities e JOIN target t ON e.storage_policy_entities = t.id
-  )
+), safe AS (
+  SELECT t.id FROM target t
+  WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.storage_policy_files = t.id)
+    AND NOT EXISTS (SELECT 1 FROM entities e WHERE e.storage_policy_entities = t.id)
 )
 UPDATE groups g
 SET storage_policy_id = NULL, updated_at = now()
-FROM target t
-WHERE g.storage_policy_id = t.id
-  AND NOT EXISTS (SELECT 1 FROM blocked);
+FROM safe s
+WHERE g.storage_policy_id = s.id;
 
 WITH target AS (
   SELECT id FROM storage_policies
   WHERE deleted_at IS NULL AND (
     name = 'R2 Default'
-    -- \u7528\u6237\u6539\u540D\u8FC7\u7684\u64AD\u79CD\u884C\uFF1A\u9760\u300Cid=1 + \u65E0 AK + relay\u300D\u8FD9\u4E2A\u72EC\u6709\u6307\u7EB9\u8BA4
     OR (id = 1 AND COALESCE(settings->>'relay', 'false') = 'true'
                 AND (access_key IS NULL OR access_key = ''))
   )
-), blocked AS (
-  SELECT 1
-  WHERE EXISTS (
-    SELECT 1 FROM files f JOIN target t ON f.storage_policy_files = t.id
-  ) OR EXISTS (
-    SELECT 1 FROM entities e JOIN target t ON e.storage_policy_entities = t.id
-  )
+), safe AS (
+  SELECT t.id FROM target t
+  WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.storage_policy_files = t.id)
+    AND NOT EXISTS (SELECT 1 FROM entities e WHERE e.storage_policy_entities = t.id)
 )
 DELETE FROM group_storage_policies gsp
-USING target t
-WHERE gsp.policy_id = t.id
-  AND NOT EXISTS (SELECT 1 FROM blocked);
+USING safe s
+WHERE gsp.policy_id = s.id;
 
 WITH target AS (
   SELECT id FROM storage_policies
   WHERE deleted_at IS NULL AND (
     name = 'R2 Default'
-    -- \u7528\u6237\u6539\u540D\u8FC7\u7684\u64AD\u79CD\u884C\uFF1A\u9760\u300Cid=1 + \u65E0 AK + relay\u300D\u8FD9\u4E2A\u72EC\u6709\u6307\u7EB9\u8BA4
     OR (id = 1 AND COALESCE(settings->>'relay', 'false') = 'true'
                 AND (access_key IS NULL OR access_key = ''))
   )
-), blocked AS (
-  SELECT 1
-  WHERE EXISTS (
-    SELECT 1 FROM files f JOIN target t ON f.storage_policy_files = t.id
-  ) OR EXISTS (
-    SELECT 1 FROM entities e JOIN target t ON e.storage_policy_entities = t.id
-  )
+), safe AS (
+  SELECT t.id FROM target t
+  WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.storage_policy_files = t.id)
+    AND NOT EXISTS (SELECT 1 FROM entities e WHERE e.storage_policy_entities = t.id)
 )
 UPDATE nodes n
 SET storage_policy_nodes = NULL, updated_at = now()
-FROM target t
-WHERE n.storage_policy_nodes = t.id
-  AND NOT EXISTS (SELECT 1 FROM blocked);
+FROM safe s
+WHERE n.storage_policy_nodes = s.id;
 
 WITH target AS (
   SELECT id FROM storage_policies
   WHERE deleted_at IS NULL AND (
     name = 'R2 Default'
-    -- \u7528\u6237\u6539\u540D\u8FC7\u7684\u64AD\u79CD\u884C\uFF1A\u9760\u300Cid=1 + \u65E0 AK + relay\u300D\u8FD9\u4E2A\u72EC\u6709\u6307\u7EB9\u8BA4
     OR (id = 1 AND COALESCE(settings->>'relay', 'false') = 'true'
                 AND (access_key IS NULL OR access_key = ''))
   )
-), blocked AS (
-  SELECT 1
-  WHERE EXISTS (
-    SELECT 1 FROM files f JOIN target t ON f.storage_policy_files = t.id
-  ) OR EXISTS (
-    SELECT 1 FROM entities e JOIN target t ON e.storage_policy_entities = t.id
-  )
+), safe AS (
+  SELECT t.id FROM target t
+  WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.storage_policy_files = t.id)
+    AND NOT EXISTS (SELECT 1 FROM entities e WHERE e.storage_policy_entities = t.id)
 )
 UPDATE users u
 SET settings = u.settings - 'upload_policy_id', updated_at = now()
-FROM target t
+FROM safe s
 WHERE u.settings ->> 'upload_policy_id' ~ '^[0-9]+$'
-  AND (u.settings ->> 'upload_policy_id')::integer = t.id
-  AND NOT EXISTS (SELECT 1 FROM blocked);
+  AND (u.settings ->> 'upload_policy_id')::integer = s.id;
 
 WITH target AS (
   SELECT id FROM storage_policies
   WHERE deleted_at IS NULL AND (
     name = 'R2 Default'
-    -- \u7528\u6237\u6539\u540D\u8FC7\u7684\u64AD\u79CD\u884C\uFF1A\u9760\u300Cid=1 + \u65E0 AK + relay\u300D\u8FD9\u4E2A\u72EC\u6709\u6307\u7EB9\u8BA4
     OR (id = 1 AND COALESCE(settings->>'relay', 'false') = 'true'
                 AND (access_key IS NULL OR access_key = ''))
   )
-), blocked AS (
-  SELECT 1
-  WHERE EXISTS (
-    SELECT 1 FROM files f JOIN target t ON f.storage_policy_files = t.id
-  ) OR EXISTS (
-    SELECT 1 FROM entities e JOIN target t ON e.storage_policy_entities = t.id
-  )
+), safe AS (
+  SELECT t.id FROM target t
+  WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.storage_policy_files = t.id)
+    AND NOT EXISTS (SELECT 1 FROM entities e WHERE e.storage_policy_entities = t.id)
 )
 UPDATE storage_policies sp
 SET deleted_at = now(), updated_at = now()
-FROM target t
-WHERE sp.id = t.id
-  AND NOT EXISTS (SELECT 1 FROM blocked);
+FROM safe s
+WHERE sp.id = s.id;
 `;Xe();tt();function Gw(t){let e=[],n="",r=t.length,i=0,s=()=>{let o=n.trim();o&&e.push(o),n=""};for(;i<r;){let o=t[i],a=i+1<r?t[i+1]:"";if(o==="-"&&a==="-"){let c=t.indexOf(`
-`,i+2);i=c===-1?r:c;continue}if(o==="/"&&a==="*"){let c=1;for(i+=2;i<r&&c>0;)t[i]==="/"&&t[i+1]==="*"?(c++,i+=2):t[i]==="*"&&t[i+1]==="/"?(c--,i+=2):i++;n+=" ";continue}if(o==="'"){for(n+=t[i++];i<r;){let c=t[i++];if(n+=c,c==="'")if(t[i]==="'")n+="'",i++;else break}continue}if(o==='"'){for(n+=t[i++];i<r;){let c=t[i++];if(n+=c,c==='"')if(t[i]==='"')n+='"',i++;else break}continue}if(o==="$"){let c=i+1;for(;c<r&&/[A-Za-z0-9_]/.test(t[c]);)c++;if(t[c]==="$"&&(c===i+1||/[A-Za-z_]/.test(t[i+1]))){let u=t.slice(i,c+1),d=t.indexOf(u,c+1),p=d===-1?r:d+u.length;n+=t.slice(i,p),i=p;continue}n+=o,i++;continue}if(o===";"){s(),i++;continue}n+=o,i++}return s(),e}Ge();Vt();var Wo="bootstrap:done:v22",Tp=[["0001_init.sql",xw],["0002_admin_content.sql",Aw],["0003_dav_passkey.sql",Iw],["0004_node_settings.sql",kw],["0005_payment.sql",Nw],["0006_audit_log.sql",Cw],["0007_paid_share.sql",Uw],["0008_oidc.sql",Lw],["0009_group_storage_policies.sql",Pw],["0010_archive.sql",Dw],["0011_file_viewers.sql",Ow],["0012_file_viewers_backfill.sql",$w],["0013_site_state.sql",Mw],["0014_rate_limits.sql",Fw],["0015_share_report.sql",qw],["0016_social_bindings.sql",Bw],["0017_entity_encryption.sql",zw],["0018_key_values.sql",Hw],["0019_direct_link_slug.sql",jw],["0020_remove_default_policy.sql",Ww]],Kw="provision:schema",xp=!1;function Px(t){let e=t instanceof Error?t.message:String(t);return/already exists|duplicate/i.test(e)}async function Dx(t,e){let n=e.sql,r=await K(t,"flag").get(Kw),i=Tp[Tp.length-1][0];if(r!==i){for(let[s,o]of Tp){let a=Gw(o).map(c=>n(c));try{await li(()=>n.transaction(a))}catch(c){if(!Px(c))throw new Error(`migration ${s} failed: ${c instanceof Error?c.message:String(c)}`)}}await K(t,"flag").put(Kw,i)}}async function Ox(t,e){let n=e.sql,r={IsAdmin:0,IsAnonymous:1,Share:2,WebDAV:3,ArchiveDownload:4,ArchiveTask:5,WebDAVProxy:6,ShareDownload:7,RemoteDownload:9,RedirectedSource:11,AdvanceDelete:12,IgnoreFileOwnership:16,UniqueRedirectDirectLink:17},i=1024**3,o=[{id:1,name:"Admin",maxStorage:1*1024**4,permissions:[r.IsAdmin,r.Share,r.WebDAV,r.WebDAVProxy,r.ArchiveDownload,r.ArchiveTask,r.ShareDownload,r.RemoteDownload,r.RedirectedSource,r.AdvanceDelete,r.IgnoreFileOwnership],settings:{source_batch:1e3,aria2_batch:50,max_walked_files:1e5,trash_retention:168*3600,redirected_source:!0}},{id:2,name:"User",maxStorage:1*i,permissions:[r.Share,r.ShareDownload,r.RedirectedSource],settings:{source_batch:10,aria2_batch:1,max_walked_files:1e5,trash_retention:168*3600,redirected_source:!0}},{id:3,name:"Anonymous",maxStorage:null,permissions:[r.IsAnonymous,r.ShareDownload],settings:{max_walked_files:1e5,redirected_source:!0}}];await li(()=>n.transaction([...o.map(l=>{let u=l.permissions.length?Math.max(...l.permissions):-1,d=new Uint8Array(Math.max(1,(u>>3)+1));for(let m of l.permissions)d[m>>3]|=1<<(m&7);let p="";for(let m of d)p+=m.toString(16).padStart(2,"0");return n`
+`,i+2);i=c===-1?r:c;continue}if(o==="/"&&a==="*"){let c=1;for(i+=2;i<r&&c>0;)t[i]==="/"&&t[i+1]==="*"?(c++,i+=2):t[i]==="*"&&t[i+1]==="/"?(c--,i+=2):i++;n+=" ";continue}if(o==="'"){for(n+=t[i++];i<r;){let c=t[i++];if(n+=c,c==="'")if(t[i]==="'")n+="'",i++;else break}continue}if(o==='"'){for(n+=t[i++];i<r;){let c=t[i++];if(n+=c,c==='"')if(t[i]==='"')n+='"',i++;else break}continue}if(o==="$"){let c=i+1;for(;c<r&&/[A-Za-z0-9_]/.test(t[c]);)c++;if(t[c]==="$"&&(c===i+1||/[A-Za-z_]/.test(t[i+1]))){let u=t.slice(i,c+1),d=t.indexOf(u,c+1),p=d===-1?r:d+u.length;n+=t.slice(i,p),i=p;continue}n+=o,i++;continue}if(o===";"){s(),i++;continue}n+=o,i++}return s(),e}Ge();Vt();var Wo="bootstrap:done:v23",Tp=[["0001_init.sql",xw],["0002_admin_content.sql",Aw],["0003_dav_passkey.sql",Iw],["0004_node_settings.sql",kw],["0005_payment.sql",Nw],["0006_audit_log.sql",Cw],["0007_paid_share.sql",Uw],["0008_oidc.sql",Lw],["0009_group_storage_policies.sql",Pw],["0010_archive.sql",Dw],["0011_file_viewers.sql",Ow],["0012_file_viewers_backfill.sql",$w],["0013_site_state.sql",Mw],["0014_rate_limits.sql",Fw],["0015_share_report.sql",qw],["0016_social_bindings.sql",Bw],["0017_entity_encryption.sql",zw],["0018_key_values.sql",Hw],["0019_direct_link_slug.sql",jw],["0021_remove_default_policy.sql",Ww]],Kw="provision:schema",xp=!1;function Px(t){let e=t instanceof Error?t.message:String(t);return/already exists|duplicate/i.test(e)}async function Dx(t,e){let n=e.sql,r=await K(t,"flag").get(Kw),i=Tp[Tp.length-1][0];if(r!==i){for(let[s,o]of Tp){let a=Gw(o).map(c=>n(c));try{await li(()=>n.transaction(a))}catch(c){if(!Px(c))throw new Error(`migration ${s} failed: ${c instanceof Error?c.message:String(c)}`)}}await K(t,"flag").put(Kw,i)}}async function Ox(t,e){let n=e.sql,r={IsAdmin:0,IsAnonymous:1,Share:2,WebDAV:3,ArchiveDownload:4,ArchiveTask:5,WebDAVProxy:6,ShareDownload:7,RemoteDownload:9,RedirectedSource:11,AdvanceDelete:12,IgnoreFileOwnership:16,UniqueRedirectDirectLink:17},i=1024**3,o=[{id:1,name:"Admin",maxStorage:1*1024**4,permissions:[r.IsAdmin,r.Share,r.WebDAV,r.WebDAVProxy,r.ArchiveDownload,r.ArchiveTask,r.ShareDownload,r.RemoteDownload,r.RedirectedSource,r.AdvanceDelete,r.IgnoreFileOwnership],settings:{source_batch:1e3,aria2_batch:50,max_walked_files:1e5,trash_retention:168*3600,redirected_source:!0}},{id:2,name:"User",maxStorage:1*i,permissions:[r.Share,r.ShareDownload,r.RedirectedSource],settings:{source_batch:10,aria2_batch:1,max_walked_files:1e5,trash_retention:168*3600,redirected_source:!0}},{id:3,name:"Anonymous",maxStorage:null,permissions:[r.IsAnonymous,r.ShareDownload],settings:{max_walked_files:1e5,redirected_source:!0}}];await li(()=>n.transaction([...o.map(l=>{let u=l.permissions.length?Math.max(...l.permissions):-1,d=new Uint8Array(Math.max(1,(u>>3)+1));for(let m of l.permissions)d[m>>3]|=1<<(m&7);let p="";for(let m of d)p+=m.toString(16).padStart(2,"0");return n`
           INSERT INTO groups (id, name, max_storage, speed_limit, permissions, settings, storage_policy_id)
           VALUES (${l.id}, ${l.name}, ${l.maxStorage}, NULL, ${`\\x${p}`}::bytea,
                   ${JSON.stringify(l.settings)}::jsonb, NULL)
