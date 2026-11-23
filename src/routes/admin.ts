@@ -316,11 +316,17 @@ adminRoutes.post('/settings', async (c) => {
     if (body.keys?.length && !body.keys.includes(r.name)) continue;
     out[r.name] = r.value ?? '';
   }
-  // 库里没有的键补默认值（只补请求的键，避免无谓地暴露全表）
-  if (body.keys?.length) {
-    for (const k of body.keys) {
-      if (!(k in out) && k in DEFAULT_SETTINGS) out[k] = DEFAULT_SETTINGS[k] ?? '';
-    }
+  // 库里没有的键一律补默认值。原来只在「请求带了 keys」时补，前端不带 keys
+  // 就会拿到一个缺键的对象 —— 管理端设置页读 `values.siteURL` 得到 undefined，
+  // 直接 `undefined.split(',')` 崩在渲染阶段（整页白屏，报
+  // "Cannot read properties of undefined (reading 'split')"）。
+  // 新建库/老库缺哪一行完全看历史，不能指望「每个键都存在」。
+  // 密钥类不能回给前端，必须排除（与保存时的 PROTECTED_KEYS 同源）。
+  const hidden = new Set(['secret_key', 'siteID', 'hash_id_salt']);
+  for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
+    if (hidden.has(k)) continue;
+    if (k in out) continue;
+    out[k] = v ?? '';
   }
   return ok(c, out);
 });

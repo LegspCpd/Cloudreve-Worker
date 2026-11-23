@@ -41,7 +41,11 @@ import type { Env } from '../env';
 import { kvFor } from '../lib/kvRouter';
 import { resolveDb, type DbHandle } from './shard';
 
-export const BOOTSTRAP_FLAG = 'bootstrap:done:v20';
+// ⚠️ 每次给 DEFAULT_SETTINGS 新增键、或改 migrations/ 与 provision/seed，
+// 都必须 bump 这里的版本号。ensureSettings 只在「flag 不存在」时跑一次，
+// 不 bump 的话老部署永远补不上新增的设置行 —— 管理端读 values.xxx 得到
+// undefined 就会在渲染阶段崩（v20 → v21 就是因为 siteURL 缺失导致整页白屏）。
+export const BOOTSTRAP_FLAG = 'bootstrap:done:v21';
 
 const MIGRATIONS: ReadonlyArray<readonly [name: string, sqlText: string]> = [
   ['0001_init.sql', m0001],
