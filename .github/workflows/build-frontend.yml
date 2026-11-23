@@ -64,12 +64,15 @@ jobs:
           # 源码构建；EdgeOne 的 /dev/shm 只有几十 MB，yarn 直接 ENOSPC。
           cp -r frontend "_pack/_frontend-src/${ASSET%.tar.gz}"
           tar -czf "$ASSET" -C _pack _frontend-src
-          tar -tzf "$ASSET" | grep -q "^_frontend-src/${ASSET%.tar.gz}/index.html$" || {
+          # 先把清单读进变量：grep -q 遇到匹配就关管道，tar 会 SIGPIPE，
+          # 在 pipefail 下整个步骤会假失败。
+          LIST=$(tar -tzf "$ASSET")
+          printf '%s\n' "$LIST" | grep -q "^_frontend-src/${ASSET%.tar.gz}/index.html$" || {
             echo "包内结构不对：$ASSET"; exit 1;
           }
           # 只允许一个版本目录。之前包里被反复追加过 cloudflare/universal/
           # vanilla 多套目录，下载到的 universal 包实际装的是 cloudflare 内容。
-          DIRS=$(tar -tzf "$ASSET" | awk -F/ 'NF>=2 && $2!="" {print $2}' | sort -u | wc -l)
+          DIRS=$(printf '%s\n' "$LIST" | awk -F/ 'NF>=2 && $2!="" {print $2}' | sort -u | wc -l)
           [ "$DIRS" -eq 1 ] || { echo "包内有 $DIRS 个版本目录：$ASSET"; exit 1; }
           gh release view frontend-assets >/dev/null 2>&1 || \
             gh release create frontend-assets --title "Frontend assets" \
