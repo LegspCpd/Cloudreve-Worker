@@ -456,7 +456,17 @@ async function serveFrontend(c: Context<AppBindings>): Promise<Response> {
   }
 
   if (c.env.ASSETS) {
-    return c.env.ASSETS.fetch(c.req.raw);
+    const res = await c.env.ASSETS.fetch(c.req.raw);
+    // 静态层会把 index.html 缓存成 CF-Cache-Status: HIT，部署后浏览器仍拿到
+    // 旧壳（引用已经不存在的 chunk）。`/` 与 `/index.html` 已在
+    // run_worker_first 里交给 Worker，这里把 HTML 改成 no-store，
+    // 之后每次导航都回源拿当前版本。
+    if (res.headers.get('content-type')?.includes('text/html')) {
+      const noStore = new Response(res.body, res);
+      noStore.headers.set('Cache-Control', 'no-store');
+      return noStore;
+    }
+    return res;
   }
 
   return c.text(
