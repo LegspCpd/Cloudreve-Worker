@@ -58,8 +58,19 @@ jobs:
           ASSET=$(node scripts/fetch-frontend.mjs --asset-name)
           echo "包名：$ASSET"
           rm -rf _pack && mkdir -p _pack/_frontend-src
-          cp -r frontend "_pack/_frontend-src/frontend-${ASSET%.tar.gz}"
+          # 包内目录名必须和 fetch-frontend.mjs 的期待完全一致：
+          #   _frontend-src/<ASSET 去掉 .tar.gz>/index.html
+          # 早期这里多拼了一层 `frontend-`，下载后 lstat 失败，每次都退回
+          # 源码构建；EdgeOne 的 /dev/shm 只有几十 MB，yarn 直接 ENOSPC。
+          cp -r frontend "_pack/_frontend-src/${ASSET%.tar.gz}"
           tar -czf "$ASSET" -C _pack _frontend-src
+          tar -tzf "$ASSET" | grep -q "^_frontend-src/${ASSET%.tar.gz}/index.html$" || {
+            echo "包内结构不对：$ASSET"; exit 1;
+          }
+          # 只允许一个版本目录。之前包里被反复追加过 cloudflare/universal/
+          # vanilla 多套目录，下载到的 universal 包实际装的是 cloudflare 内容。
+          DIRS=$(tar -tzf "$ASSET" | awk -F/ 'NF>=2 && $2!="" {print $2}' | sort -u | wc -l)
+          [ "$DIRS" -eq 1 ] || { echo "包内有 $DIRS 个版本目录：$ASSET"; exit 1; }
           gh release view frontend-assets >/dev/null 2>&1 || \
             gh release create frontend-assets --title "Frontend assets" \
               --notes "前端三版本预构建包：cloudflare / universal / vanilla，commit + 补丁哈希 + 版本各一包"

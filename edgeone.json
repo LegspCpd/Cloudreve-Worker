@@ -1,7 +1,7 @@
 {
   "name": "cloudreve-edge",
   "installCommand": "npm install",
-  "buildCommand": "node scripts/build-edgeone.mjs",
+  "buildCommand": "FRONTEND_VARIANT=universal node scripts/build-edgeone.mjs",
   "outputDirectory": "dist",
   "nodeVersion": "22.11.0",
   "headers": [
