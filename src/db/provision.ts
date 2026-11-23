@@ -78,7 +78,7 @@ const MIGRATIONS: ReadonlyArray<readonly [name: string, sqlText: string]> = [
   // 0018：通用 KV 表（无 KV 绑定环境的 kvRouter 兜底）。曾漏注册，
   // 只能靠 kvStore 运行时的 CREATE TABLE IF NOT EXISTS 兜底，自举不会建表。
   ['0018_key_values.sql', m0018],
-  // 0019：直链随机 / 自定义短码（direct_links.slug）
+  // 0019：历史短链列（已停止生成新短码，保留列与 /d/ 兼容存量链接）
   ['0019_direct_link_slug.sql', m0019],
   // 0021：清掉旧版播种的 R2 Default，解绑组/节点/用户偏好。逐条判断文件引用，
   // 有文件/实体挂着的那条跳过，其他同名策略照删（0020 是全局闸，已废弃）。

@@ -2137,10 +2137,10 @@ export class DirectLinkRepo {
     return rows.map((r) => this.normalize(r));
   }
 
-  async create(fileId: number, name: string, speed: number, slug?: string | null) {
+  async create(fileId: number, name: string, speed: number) {
     const rows = (await this.sql`
-      INSERT INTO direct_links (name, downloads, speed, file_id, slug)
-      VALUES (${name}, 0, ${speed}, ${fileId}, ${slug ?? null})
+      INSERT INTO direct_links (name, downloads, speed, file_id)
+      VALUES (${name}, 0, ${speed}, ${fileId})
       RETURNING *
     `) as Record<string, unknown>[];
     return this.normalize(rows[0]!);
@@ -2173,13 +2173,6 @@ export class DirectLinkRepo {
     `) as Record<string, unknown>[];
     const r = rows[0];
     return r ? this.normalize(r) : null;
-  }
-
-  /** 更新直链的短码。唯一索引保证冲突会抛错，由调用方转成友好提示。 */
-  async updateSlug(id: number, slug: string | null): Promise<void> {
-    await this.sql`
-      UPDATE direct_links SET slug = ${slug}, updated_at = now() WHERE id = ${id}
-    `;
   }
 
   async incrementDownloads(id: number): Promise<void> {

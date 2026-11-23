@@ -855,53 +855,15 @@ fileRoutes.delete('/pin', async (c) => {
 fileRoutes.put('/source', async (c) => {
   const ctx = ctxOf(c);
   if (!ctx.user) return fail(c, Err.loginRequired());
-  const body = (await c.req.json().catch(() => ({}))) as {
-    uris?: string[];
-    /** 可选：短链自定义码。不传 / 传空则生成随机码。 */
-    slug?: string;
-  };
+  const body = (await c.req.json().catch(() => ({}))) as { uris?: string[] };
   if (!body.uris?.length) return fail(c, Err.param('uris is required'));
-  // 自定义 slug 只允许字母数字和 -_，防路径穿越 / 查询串注入 / 与其它路由冲突
-  if (body.slug != null && body.slug !== '' && !/^[A-Za-z0-9_-]{1,64}$/.test(body.slug)) {
-    return fail(c, Err.param('slug must be 1-64 chars of letters, digits, - or _'));
-  }
-  if (body.slug && body.uris.length > 1) {
-    return fail(c, Err.param('custom slug can only be used with a single file'));
-  }
   try {
     const service = new FileSystemService(ctx);
     const download = new DownloadService(ctx, service);
     const uris = body.uris.map((u) => URI.parse(u));
-    const links = await download.createDirectLink(uris, 0, body.slug);
+    const links = await download.createDirectLink(uris, 0);
     return ok(c, links);
   } catch (e) {
-    return fail(c, e);
-  }
-});
-
-/**
- * 修改直链短码（前端「获取直链」对话框里自定义后缀）。
- * 传空 slug 表示恢复成随机码 —— 随机也要在服务端生成，不能由客户端说了算。
- */
-fileRoutes.patch('/source/:id/slug', async (c) => {
-  const ctx = ctxOf(c);
-  if (!ctx.user) return fail(c, Err.loginRequired());
-  const body = (await c.req.json().catch(() => ({}))) as { slug?: string };
-  const slug = body.slug?.trim() ?? '';
-  if (slug && !/^[A-Za-z0-9_-]{1,64}$/.test(slug)) {
-    return fail(c, Err.param('slug must be 1-64 chars of letters, digits, - or _'));
-  }
-  try {
-    const service = new FileSystemService(ctx);
-    const download = new DownloadService(ctx, service);
-    const link = await download.updateDirectLinkSlug(c.req.param('id'), slug || undefined);
-    return ok(c, link);
-  } catch (e) {
-    // 唯一索引冲突（23505）→ 明确告诉用户这个短码已被占用
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes('direct_links_slug') || msg.includes('duplicate key')) {
-      return fail(c, Err.param('This short code is already taken'));
-    }
     return fail(c, e);
   }
 });

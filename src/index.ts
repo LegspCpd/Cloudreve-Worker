@@ -415,7 +415,7 @@ app.get('/f/:id/:name', permLinkHandler);
 app.get('/f/d/:id/:name', permLinkHandler);
 
 /**
- * 短链 `/d/<slug>`：固定前缀 + 随机/自定义码，不泄露文件名与目录。
+ * 旧短链 `/d/<slug>` 兼容入口：已不再生成新短码，只为存量链接继续跳转。
  * 校验属主权限后 302 到文件直链（复用 /f/ 的全套校验），行为与上游 /f/ 一致。
  */
 app.get('/d/:slug', async (c: AppRequest) => {

@@ -192,10 +192,6 @@ export interface DirectLinkInfo {
   file_url?: string;
   /** 直链 URL（前端直链契约字段名是 link，非 url）。 */
   link?: string;
-  /** 短链 URL：`/d/<slug>`，访问后 302 到文件直链下载。 */
-  short_link?: string;
-  /** 短链码（随机或用户自定义）。 */
-  slug?: string;
 }
 
 export interface StoragePolicyInfo {
