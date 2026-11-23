@@ -520,13 +520,13 @@ try {
   }
 
   // -------------------------------------------------------------------------
-  // [15] 迁移 0020：旧版播种的 R2 Default 必须清掉，且不能误伤有文件的策略
+  // [15] 迁移 0021：旧版播种的 R2 Default 必须清掉，且不能误伤有文件的策略
   // -------------------------------------------------------------------------
   console.log('\n[15] 默认存储策略清理迁移');
-  const p20Path = path.join(ROOT, 'migrations', '0020_remove_default_policy.sql');
-  const p20Text = readFileSync(p20Path, 'utf8');
-  const run0020 = async () => {
-    for (const stmt of splitStatements(p20Text)) {
+  const p21Path = path.join(ROOT, 'migrations', '0021_remove_default_policy.sql');
+  const p21Text = readFileSync(p21Path, 'utf8');
+  const run0021 = async () => {
+    for (const stmt of splitStatements(p21Text)) {
       if (stmt.trim()) await db.exec(stmt);
     }
   };
@@ -554,7 +554,7 @@ try {
      ON CONFLICT DO NOTHING`,
   );
 
-  await run0020();
+  await run0021();
   const gone = (await db.query(`SELECT deleted_at FROM storage_policies WHERE id = 9002`)).rows[0];
   check('旧默认策略被软删', Boolean(gone?.deleted_at));
   const gAfter = (await db.query(`SELECT storage_policy_id FROM groups WHERE id = 9001`)).rows[0];
@@ -579,10 +579,17 @@ try {
      VALUES (9001, 0, 'keep.txt', (SELECT id FROM users WHERE email = 'policy-cleanup@example.com'), 2)
      ON CONFLICT (id) DO NOTHING`,
   );
+  await db.query(
+    `INSERT INTO storage_policies (id, name, type, settings)
+     VALUES (3, 'R2 Default', 's3', '{"relay": true}'::jsonb)
+     ON CONFLICT (id) DO NOTHING`,
+  );
   await db.query(`UPDATE groups SET storage_policy_id = 2 WHERE id = 9001`);
-  await run0020();
+  await run0021();
   const kept = (await db.query(`SELECT deleted_at FROM storage_policies WHERE id = 2`)).rows[0];
   check('有文件的同名策略不被误删', !kept?.deleted_at);
+  const clean = (await db.query(`SELECT deleted_at FROM storage_policies WHERE id = 3`)).rows[0];
+  check('无文件的同名策略照常清掉', Boolean(clean?.deleted_at));
   const gKept = (await db.query(`SELECT storage_policy_id FROM groups WHERE id = 9001`)).rows[0];
   check('有文件的策略仍保持组绑定', Number(gKept?.storage_policy_id) === 2, String(gKept?.storage_policy_id));
 } catch (e) {

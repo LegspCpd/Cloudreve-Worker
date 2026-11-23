@@ -35,7 +35,7 @@ import m0016 from '../../migrations/0016_social_bindings.sql';
 import m0017 from '../../migrations/0017_entity_encryption.sql';
 import m0018 from '../../migrations/0018_key_values.sql';
 import m0019 from '../../migrations/0019_direct_link_slug.sql';
-import m0020 from '../../migrations/0020_remove_default_policy.sql';
+import m0021 from '../../migrations/0021_remove_default_policy.sql';
 import { withRetry } from './index';
 import { randomString } from '../lib/crypto';
 import { splitStatements } from '../lib/sql-split.mjs';
@@ -47,7 +47,7 @@ import { resolveDb, type DbHandle } from './shard';
 // 都必须 bump 这里的版本号。ensureSettings 只在「flag 不存在」时跑一次，
 // 不 bump 的话老部署永远补不上新增的设置行 —— 管理端读 values.xxx 得到
 // undefined 就会在渲染阶段崩（v20 → v21 就是因为 siteURL 缺失导致整页白屏）。
-export const BOOTSTRAP_FLAG = 'bootstrap:done:v22';
+export const BOOTSTRAP_FLAG = 'bootstrap:done:v23';
 
 const MIGRATIONS: ReadonlyArray<readonly [name: string, sqlText: string]> = [
   ['0001_init.sql', m0001],
@@ -80,8 +80,9 @@ const MIGRATIONS: ReadonlyArray<readonly [name: string, sqlText: string]> = [
   ['0018_key_values.sql', m0018],
   // 0019：直链随机 / 自定义短码（direct_links.slug）
   ['0019_direct_link_slug.sql', m0019],
-  // 0020：清掉旧版播种的 R2 Default，解绑组/节点/用户偏好。有文件引用则跳过。
-  ['0020_remove_default_policy.sql', m0020],
+  // 0021：清掉旧版播种的 R2 Default，解绑组/节点/用户偏好。逐条判断文件引用，
+  // 有文件/实体挂着的那条跳过，其他同名策略照删（0020 是全局闸，已废弃）。
+  ['0021_remove_default_policy.sql', m0021],
 ];
 
 /** KV 标记：值是最后一个已应用的迁移文件名，文件名不变就跳过。 */
@@ -243,7 +244,7 @@ async function seedSystemData(env: Env, db: DbHandle): Promise<void> {
     ]),
   );
 
-  // 不再播种默认存储策略，也不给系统组硬绑策略。存量库由迁移 0020 清理，
+  // 不再播种默认存储策略，也不给系统组硬绑策略。存量库由迁移 0021 清理，
   // 新库由管理员在后台建策略后自行分配到用户组。
 
   // 数据修复：早期版本把默认策略 type 播种成了自造值 'r2'，而上游前端

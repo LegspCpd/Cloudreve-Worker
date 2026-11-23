@@ -220,7 +220,7 @@ async function main() {
   // 让自增序列跟在手工指定的 id 之后，避免后续插入主键冲突
   await sql`SELECT setval(pg_get_serial_sequence('groups', 'id'), (SELECT MAX(id) FROM groups))`;
 
-  // 不再播种默认存储策略，也不给系统组硬绑策略（迁移 0020 负责清存量）。
+  // 不再播种默认存储策略，也不给系统组硬绑策略（迁移 0021 负责清存量）。
 
   // ---- 管理员账号 -----------------------------------------------------------
   const adminEmail = process.env.ADMIN_EMAIL || 'admin@example.com';

@@ -995,7 +995,7 @@ adminRoutes.delete('/policy/:id', async (c) => {
   const id = numericId(c.req.param('id'), (v) => ctx.codec.decodePolicyID(v));
   if (id === null) return fail(c, new AppError(40035, 'Policy not found'));
 
-  // 不再有不可删除的默认策略：新库不播种，存量播种行由迁移 0020 清掉。
+  // 不再有不可删除的默认策略：新库不播种，存量播种行由迁移 0021 清掉。
   // 只拦真实引用，避免删掉策略后文件/实体失去归属、组内仍显示可切换。
   const fileCount = await ctx.policies.countFiles(id);
   const entityCount = await ctx.policies.countEntities(id);
