@@ -995,19 +995,19 @@ adminRoutes.delete('/policy/:id', async (c) => {
   const id = numericId(c.req.param('id'), (v) => ctx.codec.decodePolicyID(v));
   if (id === null) return fail(c, new AppError(40035, 'Policy not found'));
 
-  // 默认策略（id=1）禁止删除，与上游 `SingleStoragePolicyService.Delete` 一致
-  if (id === 1) {
-    return fail(c, new AppError(40036, 'Cannot delete the default storage policy'));
-  }
-
+  // 不再有不可删除的默认策略：新库不播种，存量播种行由迁移 0020 清掉。
+  // 只拦真实引用，避免删掉策略后文件/实体失去归属、组内仍显示可切换。
   const fileCount = await ctx.policies.countFiles(id);
-  if (fileCount > 0) {
+  const entityCount = await ctx.policies.countEntities(id);
+  if (fileCount > 0 || entityCount > 0) {
     return fail(c, new AppError(40037, 'This policy still has files'));
   }
   const groupCount = await ctx.policies.countGroups(id);
-  if (groupCount > 0) {
+  const groupLinks = await ctx.policies.countGroupLinks(id);
+  if (groupCount > 0 || groupLinks > 0) {
     return fail(c, new AppError(40038, 'This policy is bound to user groups'));
   }
+  await ctx.policies.clearUploadPreference(id);
   await ctx.policies.softDelete(id);
   return ok(c);
 });

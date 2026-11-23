@@ -996,11 +996,37 @@ export class PolicyRepo {
     return toNum(rows[0]?.total);
   }
 
+  /** 实体（文件版本/缩略图）还挂在策略上时删策略会让下载与缩略图 40035。 */
+  async countEntities(id: number): Promise<number> {
+    const rows = (await this.sql`
+      SELECT COUNT(*)::int AS total FROM entities WHERE storage_policy_entities = ${id} LIMIT 1
+    `) as Record<string, unknown>[];
+    return toNum(rows[0]?.total);
+  }
+
   async countGroups(id: number): Promise<number> {
     const rows = (await this.sql`
       SELECT COUNT(*)::int AS total FROM groups WHERE storage_policy_id = ${id} AND deleted_at IS NULL
     `) as Record<string, unknown>[];
     return toNum(rows[0]?.total);
+  }
+
+  /** 多对多关联表没有外键，软删策略后留下的孤儿行会继续出现在组策略列表里。 */
+  async countGroupLinks(id: number): Promise<number> {
+    const rows = (await this.sql`
+      SELECT COUNT(*)::int AS total FROM group_storage_policies WHERE policy_id = ${id} LIMIT 1
+    `) as Record<string, unknown>[];
+    return toNum(rows[0]?.total);
+  }
+
+  /** 清掉用户 settings 里指向该策略的上传偏好，避免删策略后上传解析失败。 */
+  async clearUploadPreference(id: number): Promise<void> {
+    await this.sql`
+      UPDATE users
+      SET settings = settings - 'upload_policy_id', updated_at = now()
+      WHERE settings ->> 'upload_policy_id' ~ '^[0-9]+$'
+        AND (settings ->> 'upload_policy_id')::integer = ${id}
+    `;
   }
 }
 

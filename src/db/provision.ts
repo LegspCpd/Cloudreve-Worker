@@ -11,9 +11,10 @@
  *     冷启动并发时最多互相报「already exists」，逐条容错忽略；
  *   - 用 KV 标记（键含最后一个迁移的文件名）避免每次冷启动都重放全部 DDL。
  *
- * 播种内容与 scripts/seed.mjs 一致：三个系统用户组（id 1/2/3）、默认 R2
- * 存储策略、默认组绑定策略。**管理员账号不在这里建**（密码无从得知）：
- * 第一个注册的用户自动进管理员组，见 services/user.ts 的 register()。
+ * 播种内容与 scripts/seed.mjs 一致：三个系统用户组（id 1/2/3）。不再创建
+ * 默认存储策略，也不给系统组硬绑策略 —— 由管理员在后台建策略并分配。
+ * **管理员账号不在这里建**（密码无从得知）：第一个注册的用户自动进管理员组，
+ * 见 services/user.ts 的 register()。
  */
 import m0001 from '../../migrations/0001_init.sql';
 import m0002 from '../../migrations/0002_admin_content.sql';
@@ -34,6 +35,7 @@ import m0016 from '../../migrations/0016_social_bindings.sql';
 import m0017 from '../../migrations/0017_entity_encryption.sql';
 import m0018 from '../../migrations/0018_key_values.sql';
 import m0019 from '../../migrations/0019_direct_link_slug.sql';
+import m0020 from '../../migrations/0020_remove_default_policy.sql';
 import { withRetry } from './index';
 import { randomString } from '../lib/crypto';
 import { splitStatements } from '../lib/sql-split.mjs';
@@ -45,7 +47,7 @@ import { resolveDb, type DbHandle } from './shard';
 // 都必须 bump 这里的版本号。ensureSettings 只在「flag 不存在」时跑一次，
 // 不 bump 的话老部署永远补不上新增的设置行 —— 管理端读 values.xxx 得到
 // undefined 就会在渲染阶段崩（v20 → v21 就是因为 siteURL 缺失导致整页白屏）。
-export const BOOTSTRAP_FLAG = 'bootstrap:done:v21';
+export const BOOTSTRAP_FLAG = 'bootstrap:done:v22';
 
 const MIGRATIONS: ReadonlyArray<readonly [name: string, sqlText: string]> = [
   ['0001_init.sql', m0001],
@@ -78,6 +80,8 @@ const MIGRATIONS: ReadonlyArray<readonly [name: string, sqlText: string]> = [
   ['0018_key_values.sql', m0018],
   // 0019：直链随机 / 自定义短码（direct_links.slug）
   ['0019_direct_link_slug.sql', m0019],
+  // 0020：清掉旧版播种的 R2 Default，解绑组/节点/用户偏好。有文件引用则跳过。
+  ['0020_remove_default_policy.sql', m0020],
 ];
 
 /** KV 标记：值是最后一个已应用的迁移文件名，文件名不变就跳过。 */
@@ -239,24 +243,8 @@ async function seedSystemData(env: Env, db: DbHandle): Promise<void> {
     ]),
   );
 
-  // 默认 R2 存储策略 + 默认组绑定（对齐 seed.mjs）
-  const policyRows = (await sql`SELECT id FROM storage_policies WHERE deleted_at IS NULL ORDER BY id LIMIT 1`) as Array<{
-    id: number | string;
-  }>;
-  if (!policyRows[0]) {
-    const inserted = (await sql`
-      INSERT INTO storage_policies
-        (name, type, server, bucket_name, is_private, max_size,
-         dir_name_rule, file_name_rule, settings)
-      VALUES
-        ('R2 Default', 's3', '', '', true, 0,
-         'uploads/{uid}/{path}', '{uid}_{randomkey8}_{originname}',
-         '{"relay": true}'::jsonb)
-      RETURNING id
-    `) as Array<{ id: number | string }>;
-    const policyId = Number(inserted[0]!.id);
-    await sql`UPDATE groups SET storage_policy_id = ${policyId} WHERE id = 2 AND storage_policy_id IS NULL`;
-  }
+  // 不再播种默认存储策略，也不给系统组硬绑策略。存量库由迁移 0020 清理，
+  // 新库由管理员在后台建策略后自行分配到用户组。
 
   // 数据修复：早期版本把默认策略 type 播种成了自造值 'r2'，而上游前端
   // PolicyType 枚举没有它，StoragePolicyCard 里 PolicyPropsMap['r2'].img
@@ -275,19 +263,6 @@ async function seedSystemData(env: Env, db: DbHandle): Promise<void> {
     WHERE type = 's3'
       AND (access_key IS NULL OR access_key = '')
       AND COALESCE(settings->>'relay', 'false') <> 'true'
-  `;
-
-  // 数据修复：组播种原本只给组 2（注册组）绑定存储策略，组 1（站长）/
-  // 组 3（游客）恒为 NULL。而上游 getPreferredPolicy（dbfs.go:669 →
-  // inventory/policy.go:145 GetByGroup）假定**每个组都绑定了策略** ——
-  // 组无策略时列表响应缺 storage_policy，前端上传器点「上传」直接抛
-  // No policy selected 且文件选择器不打开。给未绑策略的系统组补绑
-  // 第一个可用策略。幂等：无 NULL 行时为空更新。
-  await sql`
-    UPDATE groups SET storage_policy_id = (
-      SELECT id FROM storage_policies WHERE deleted_at IS NULL ORDER BY id LIMIT 1
-    ), updated_at = now()
-    WHERE id IN (1, 2, 3) AND storage_policy_id IS NULL
   `;
 
   // 自建 Pro 功能：组 ↔ 存储策略多对多。上游闭源部分才有（前端文案

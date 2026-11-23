@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 初始化基础数据：三个系统用户组、一个默认存储策略、一个管理员账号。
+ * 初始化基础数据：三个系统用户组、一个管理员账号。存储策略由管理员在后台自建。
  *
  * 用法：
  *   node scripts/seed.mjs
@@ -220,29 +220,7 @@ async function main() {
   // 让自增序列跟在手工指定的 id 之后，避免后续插入主键冲突
   await sql`SELECT setval(pg_get_serial_sequence('groups', 'id'), (SELECT MAX(id) FROM groups))`;
 
-  // ---- 默认存储策略 ---------------------------------------------------------
-  const policyRows = await sql`SELECT id FROM storage_policies WHERE deleted_at IS NULL ORDER BY id LIMIT 1`;
-  let policyId = policyRows[0]?.id;
-
-  if (!policyId) {
-    const inserted = await sql`
-      INSERT INTO storage_policies
-        (name, type, server, bucket_name, is_private, max_size,
-         dir_name_rule, file_name_rule, settings)
-      VALUES
-        ('R2 Default', 's3', '', '', true, 0,
-         'uploads/{uid}/{path}', '{uid}_{randomkey8}_{originname}',
-         '{"relay": true}'::jsonb)
-      RETURNING id
-    `;
-    policyId = inserted[0].id;
-    console.log(`  storage policy #${policyId} (s3, R2 兼容) created`);
-  } else {
-    console.log(`  storage policy #${policyId} already exists, kept`);
-  }
-
-  // 默认用户组绑定到该策略
-  await sql`UPDATE groups SET storage_policy_id = ${policyId} WHERE id = 2 AND storage_policy_id IS NULL`;
+  // 不再播种默认存储策略，也不给系统组硬绑策略（迁移 0020 负责清存量）。
 
   // ---- 管理员账号 -----------------------------------------------------------
   const adminEmail = process.env.ADMIN_EMAIL || 'admin@example.com';

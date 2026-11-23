@@ -518,6 +518,73 @@ try {
   check('非空的 secret_key 原样保留', byName.get('secret_key') === secretBefore);
   check('非空的 siteID 原样保留', byName.get('siteID') === siteIdBefore);
   }
+
+  // -------------------------------------------------------------------------
+  // [15] 迁移 0020：旧版播种的 R2 Default 必须清掉，且不能误伤有文件的策略
+  // -------------------------------------------------------------------------
+  console.log('\n[15] 默认存储策略清理迁移');
+  const p20Path = path.join(ROOT, 'migrations', '0020_remove_default_policy.sql');
+  const p20Text = readFileSync(p20Path, 'utf8');
+  const run0020 = async () => {
+    for (const stmt of splitStatements(p20Text)) {
+      if (stmt.trim()) await db.exec(stmt);
+    }
+  };
+  await db.query(
+    `INSERT INTO groups (id, name) VALUES (9001, 'policy-cleanup-test')
+     ON CONFLICT (id) DO NOTHING`,
+  );
+  await db.query(
+    `INSERT INTO users (email, nick, group_users, settings)
+     VALUES ('policy-cleanup@example.com', 't', 9001, '{"upload_policy_id": 9002}'::jsonb)
+     ON CONFLICT (email) DO NOTHING`,
+  );
+  await db.query(
+    `INSERT INTO storage_policies (id, name, type, settings)
+     VALUES (9002, 'R2 Default', 's3', '{"relay": true}'::jsonb)
+     ON CONFLICT (id) DO NOTHING`,
+  );
+  await db.query(
+    `INSERT INTO nodes (id, name, type, storage_policy_nodes) VALUES (9001, 't', 'slave', 9002)
+     ON CONFLICT (id) DO NOTHING`,
+  );
+  await db.query(`UPDATE groups SET storage_policy_id = 9002 WHERE id = 9001`);
+  await db.query(
+    `INSERT INTO group_storage_policies (group_id, policy_id) VALUES (9001, 9002)
+     ON CONFLICT DO NOTHING`,
+  );
+
+  await run0020();
+  const gone = (await db.query(`SELECT deleted_at FROM storage_policies WHERE id = 9002`)).rows[0];
+  check('旧默认策略被软删', Boolean(gone?.deleted_at));
+  const gAfter = (await db.query(`SELECT storage_policy_id FROM groups WHERE id = 9001`)).rows[0];
+  check('系统组解除策略绑定', gAfter?.storage_policy_id == null, String(gAfter?.storage_policy_id));
+  const links = (await db.query(`SELECT COUNT(*)::int AS n FROM group_storage_policies WHERE group_id = 9001`)).rows[0];
+  check('组策略关联表清空', Number(links?.n) === 0, String(links?.n));
+  const nodeAfter = (await db.query(`SELECT storage_policy_nodes FROM nodes WHERE id = 9001`)).rows[0];
+  check('节点解除策略绑定', nodeAfter?.storage_policy_nodes == null);
+  const userAfter = (await db.query(
+    `SELECT settings FROM users WHERE email = 'policy-cleanup@example.com'`,
+  )).rows[0];
+  check('用户上传偏好被清掉', userAfter?.settings?.upload_policy_id == null);
+
+  // 有文件挂在同名策略上时整组跳过，否则文件会失去策略归属
+  await db.query(
+    `INSERT INTO storage_policies (id, name, type, settings)
+     VALUES (2, 'R2 Default', 's3', '{"relay": true}'::jsonb)
+     ON CONFLICT (id) DO NOTHING`,
+  );
+  await db.query(
+    `INSERT INTO files (id, type, name, owner_id, storage_policy_files)
+     VALUES (9001, 0, 'keep.txt', (SELECT id FROM users WHERE email = 'policy-cleanup@example.com'), 2)
+     ON CONFLICT (id) DO NOTHING`,
+  );
+  await db.query(`UPDATE groups SET storage_policy_id = 2 WHERE id = 9001`);
+  await run0020();
+  const kept = (await db.query(`SELECT deleted_at FROM storage_policies WHERE id = 2`)).rows[0];
+  check('有文件的同名策略不被误删', !kept?.deleted_at);
+  const gKept = (await db.query(`SELECT storage_policy_id FROM groups WHERE id = 9001`)).rows[0];
+  check('有文件的策略仍保持组绑定', Number(gKept?.storage_policy_id) === 2, String(gKept?.storage_policy_id));
 } catch (e) {
   failed += 1;
   console.error('\n  ERROR', e instanceof Error ? e.message : e);
