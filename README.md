@@ -36,6 +36,14 @@ Cloudreve v4 的后端，用 TypeScript 照着重写，跑在 Cloudflare Workers
 
 存储走 R2 / S3 / OneDrive / 又拍云等，数据库用任意 PostgreSQL（Neon 走 HTTP 驱动，Supabase / CockroachDB / Xata / Prisma Postgres / Railway / Render / 自建走标准协议），前端是官方那套，跟 Worker 一起发布。
 
+## 运行平台
+
+| 平台 | 入口 | 状态 |
+|---|---|---|
+| Cloudflare Workers | `src/index.ts` | 主平台，功能最全 |
+| EdgeOne Pages | `api/makers.ts` | 次平台，日常维护 |
+| 阿里云 ESA | `api/esa.ts` | 半维护，代码保留，偶发更新 |
+
 ## 部署
 
 > [!TIP]

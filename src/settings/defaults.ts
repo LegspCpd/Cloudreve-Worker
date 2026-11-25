@@ -182,7 +182,9 @@ export const DEFAULT_SETTINGS: Record<string, string> = {
   media_meta_music: '1',
   media_meta_music_size_local: '1073741824',
   media_exif_music_size_remote: '1073741824',
-  media_meta_ffprobe: '0',
+  // Edge 版用纯 JS 解析 MP4/MOV 元数据（不依赖 ffprobe 二进制），默认开启，
+  // 让视频的时长/分辨率/编码在侧栏有信息。原生 ffprobe 路径配置仅作占位。
+  media_meta_ffprobe: '1',
   media_meta_ffprobe_path: 'ffprobe',
   media_meta_ffprobe_size_local: '0',
   media_meta_ffprobe_size_remote: '0',

@@ -1,3 +1,5 @@
+import { isGenericOctet, mimeByExt } from './mime';
+
 /**
  * RFC 6266 规范的 Content-Disposition: attachment 值。
  * 对齐上游 entitysource.go:296-305：纯 ASCII 文件名用简单形式；
@@ -71,8 +73,14 @@ export function safeContentType(raw: string | undefined, name: string): {
     };
   }
 
+  // 存储没给类型（或给了 octet-stream）时按扩展名兜底：Safari 对视频的
+  // Content-Type 敏感，video/mp4 缺失会直接拒绝播放；图片预览同理。
+  let finalType = raw ?? 'application/octet-stream';
+  if (isGenericOctet(finalType)) {
+    finalType = mimeByExt(name) ?? finalType;
+  }
   return {
-    contentType: raw ?? 'application/octet-stream',
+    contentType: finalType,
     forceAttachment: false,
     extraHeaders: { 'X-Content-Type-Options': 'nosniff' },
   };

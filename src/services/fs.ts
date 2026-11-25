@@ -16,6 +16,7 @@ import type { ExplorerView, FileRow, MetadataRow, StoragePolicyRow } from '../db
 import { BooleanSet, EntityType, FileType, GroupPermission, PolicyType } from '../lib/boolset';
 import { isPolicyTypeSupported } from '../storage';
 import { generateSavePath, extOf } from './savepath';
+import { mimeByExt } from '../lib/mime';
 import {
   deriveFileMasterKey,
   deriveFileMasterKeys,
@@ -29,31 +30,7 @@ import type { EncryptMetadata } from '../db/types';
 
 /** 转移文件时按扩展名推导一个 content-type（实体表不存 mime，旧对象读回时也只能靠文件名推）。 */
 function extToMime(name: string): string {
-  const ext = extOf(name).toLowerCase();
-  const map: Record<string, string> = {
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.png': 'image/png',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-    '.svg': 'image/svg+xml',
-    '.bmp': 'image/bmp',
-    '.mp4': 'video/mp4',
-    '.mov': 'video/quicktime',
-    '.webm': 'video/webm',
-    '.mp3': 'audio/mpeg',
-    '.wav': 'audio/wav',
-    '.pdf': 'application/pdf',
-    '.txt': 'text/plain',
-    '.html': 'text/html',
-    '.json': 'application/json',
-    '.zip': 'application/zip',
-    '.doc': 'application/msword',
-    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    '.xls': 'application/vnd.ms-excel',
-    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  };
-  return map[ext] ?? 'application/octet-stream';
+  return mimeByExt(name) ?? 'application/octet-stream';
 }
 
 

@@ -51,6 +51,32 @@ export interface FileUrlResponse {
   expires: Date | string | null;
 }
 
+/**
+ * 分享下载计数的去重窗口。
+ *
+ * HLS/m3u8 播放器会为每个切片调一次 /file/url；若每次都算一次下载，
+ * 限次分享的视频播几十秒就把配额扣光，后续切片换签失败 → 播放中断。
+ * 进程内按 `${shareId}:${entityHash}` 去重 60 秒：一次播放只扣一次，
+ * 隔一阵重新播放再扣。isolate 间不共享，但同一播放的切片总落在同一 isolate，
+ * 足以解决主问题，且不碰 KV 写入配额。
+ */
+const shareCountDedup = new Map<string, number>();
+const SHARE_COUNT_WINDOW_MS = 60_000;
+function shouldCountShareDownload(shareId: number, entityKey: string): boolean {
+  const key = `${shareId}:${entityKey}`;
+  const now = Date.now();
+  const last = shareCountDedup.get(key);
+  if (last !== undefined && now - last < SHARE_COUNT_WINDOW_MS) return false;
+  shareCountDedup.set(key, now);
+  // 顺手清理过期项，避免长生命周期 isolate 内存泄漏
+  if (shareCountDedup.size > 512) {
+    for (const [k, t] of shareCountDedup) {
+      if (now - t >= SHARE_COUNT_WINDOW_MS) shareCountDedup.delete(k);
+    }
+  }
+  return true;
+}
+
 export interface GetUrlOptions {
   download?: boolean;
   entity?: string;
@@ -143,15 +169,6 @@ export class DownloadService {
         throw new AppError(CodeFileNotFound, 'Cannot generate download URL for a folder');
       }
 
-      // 分享下载计数。原版由 navigator 的 `HookTypeBeforeDownload` 钩子完成
-      // （share_navigator.go:302-308 → shareClient.Downloaded：downloads +1，
-      //  remain_downloads 有值时再 -1），钩子在 `GetEntityUrls` 里触发，
-      // 也就是**生成下载地址时**计数，而不是真正取字节时。
-      if (uri.fsType === FileSystemType.Share && uri.id) {
-        const shareId = this.ctx.codec.decodeShareID(uri.id);
-        if (shareId !== null) await this.ctx.shares.incrementDownloads(shareId);
-      }
-
       let entity: EntityRow;
       try {
         entity = await this.primaryEntityOf(file, options.entity);
@@ -169,6 +186,15 @@ export class DownloadService {
         throw e;
       }
       const name = file.name;
+
+      // 分享下载计数。原版在 GetEntityUrls 时触发（downloads +1 / remain -1）。
+      // 去重窗口避免 HLS 逐切片换签把限次分享的配额瞬间扣光。
+      if (uri.fsType === FileSystemType.Share && uri.id) {
+        const shareId = this.ctx.codec.decodeShareID(uri.id);
+        if (shareId !== null && shouldCountShareDownload(shareId, String(entity.id))) {
+          await this.ctx.shares.incrementDownloads(shareId);
+        }
+      }
 
       const policy = await this.ctx.policies.byId(entity.storage_policy_entities);
       if (!policy) throw Err.policyNotAllowed();
@@ -424,8 +450,31 @@ export class DownloadService {
     const native = await driver.thumb(entity.source, 'large').catch(() => null);
     if (native) return { url: native, expires: null };
 
-    // R2/S3 等无原生缩略图：对图片走 Cloudflare Image Resizing 实时缩放
     const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+    const w = this.ctx.settings.getInt('thumb_width', 512);
+    const h = this.ctx.settings.getInt('thumb_height', 512);
+    const base = this.ctx.settings.siteUrl.replace(/\/+$/, '');
+    const expires = Math.floor(Date.now() / 1000) + 3600;
+
+    // 音乐封面（music_cover 生成器）：内嵌 APIC/covr 由 /thumbcover 实时提取，
+    // 端点内带边缘缓存，避免每首都回源解析。 Workers 跑不了 ffprobe，
+    // 但读内嵌图片字节不需要任何原生程序。
+    const isMusic = ['mp3', 'm4a', 'aac', 'alac'].includes(ext);
+    if (isMusic && this.ctx.settings.getBool('thumb_music_cover_enabled', false)) {
+      const size = Number(entity.size ?? 0);
+      const maxSize = this.ctx.settings.getInt('thumb_music_cover_max_size', 1073741824);
+      if (size > 0 && size <= maxSize) {
+        const entityHash = this.ctx.codec.encodeEntityID(entity.id);
+        const path = `/api/v4/file/thumbcover/${entityHash}/${encodeURIComponent(file.name)}`;
+        const sign = await this.ctx.signer.sign(path, expires);
+        return {
+          url: `${base}${path}?w=${w}&h=${h}&sign=${encodeURIComponent(sign)}`,
+          expires: null,
+        };
+      }
+    }
+
+    // R2/S3 等无原生缩略图：对图片走 Cloudflare Image Resizing 实时缩放
     const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'tif', 'tiff'].includes(
       ext,
     );
@@ -442,11 +491,8 @@ export class DownloadService {
       .catch(() => null);
     if (!src) return { url: '', expires: null };
 
-    const w = this.ctx.settings.getInt('thumb_width', 512);
-    const h = this.ctx.settings.getInt('thumb_height', 512);
     // 缩略图 URL 原来漏传 expires，sign() 默认 0 = 永久可重放。
-    const sign = await this.ctx.signer.sign(src, Math.floor(Date.now() / 1000) + 3600);
-    const base = this.ctx.settings.siteUrl.replace(/\/+$/, '');
+    const sign = await this.ctx.signer.sign(src, expires);
     const url = `${base}/api/v4/file/thumbimg?src=${encodeURIComponent(src)}&w=${w}&h=${h}&sign=${encodeURIComponent(sign)}`;
     return { url, expires: null };
   }

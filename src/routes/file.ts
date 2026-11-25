@@ -38,6 +38,8 @@ import { AppContext as AppContextClass } from '../services/context';
 import { FileSystemService } from '../services/fs';
 import { parseFileViewers } from '../settings/fileViewers';
 import { SearchService } from '../services/search';
+import { hookMediaMeta } from '../services/media/indexer';
+import { extractCover } from '../services/media/cover';
 import { UploadService } from '../services/upload';
 import { DownloadService } from '../services/download';
 import { UserService } from '../services/user';
@@ -461,6 +463,52 @@ fileRoutes.get('/thumbimg', async (c) => {
 });
 
 /**
+ * 音乐封面成像端点（GET）。由 `download.thumb()` 对 mp3/m4a 生成带签名的
+ * URL，这里实时从实体的内嵌标签（ID3 APIC / M4A covr）里读出图片字节。
+ * Workers 跑不了 ffprobe，但内嵌封面就是一段 JPEG/PNG 字节，纯 JS 即可取。
+ *
+ * 路径带 entityHash，签名覆盖 pathname；命中边缘缓存后不再回源解析。
+ */
+fileRoutes.get('/thumbcover/:id/:name', async (c) => {
+  const ctx = ctxOf(c);
+  const entityHash = c.req.param('id') ?? '';
+  const name = c.req.param('name') ?? '';
+  const sign = c.req.query('sign');
+  if (!sign) return fail(c, Err.param('missing sign'));
+  try {
+    await ctx.signer.check(new URL(c.req.url).pathname, sign);
+  } catch {
+    return fail(c, Err.noPermission());
+  }
+
+  const entityId = ctx.codec.decodeEntityID(entityHash);
+  if (entityId === null) return fail(c, Err.fileNotFound());
+  const u = new URL(c.req.url);
+  const cacheKey = `/__edge_cache__/thumbcover/${entityHash}`;
+  const hit = await edgeCacheMatch(u.origin, cacheKey);
+  if (hit) return hit;
+
+  try {
+    const entity = await ctx.entities.byId(entityId);
+    if (!entity) return fail(c, Err.fileNotFound());
+    const cover = await extractCover(ctx, entity, name);
+    if (!cover) return fail(c, Err.fileNotFound());
+
+    const headers = new Headers();
+    headers.set('Content-Type', cover.contentType);
+    headers.set('Content-Length', String(cover.bytes.byteLength));
+    headers.set('Cache-Control', 'public, max-age=86400');
+    headers.set('X-Content-Type-Options', 'nosniff');
+    const body = new Uint8Array(cover.bytes);
+    const res = new Response(body.buffer as ArrayBuffer, { status: 200, headers });
+    edgeCachePut(ctx.waitUntil, u.origin, cacheKey, res.clone(), 86400);
+    return res;
+  } catch (e) {
+    return fail(c, e);
+  }
+});
+
+/**
  * 从 `bytes a-b/total` 形式的 Content-Range 里算出本次返回的字节数。
  *
  * 206 响应的 Content-Length 必须是**这一段**的长度，不是对象总大小。
@@ -608,7 +656,7 @@ fileRoutes.put('/content', async (c) => {
   try {
     const service = new FileSystemService(ctx);
     const upload = new UploadService(ctx, service);
-    upload.onUploadFinished = (file) => hookFtsIndex(c, ctx, file);
+    upload.onUploadFinished = (file) => hookAfterUpload(c, ctx, file);
     await upload.overwriteContent(URI.parse(rawUri), body, Number(c.req.header('Content-Length') ?? 0), c.req.header('Content-Type') ?? '', {
       previous: c.req.query('previous') ?? undefined,
     });
@@ -795,7 +843,7 @@ fileRoutes.post('/upload/:sessionId/:index', async (c) => {
   try {
     const service = new FileSystemService(ctx);
     const upload = new UploadService(ctx, service);
-    upload.onUploadFinished = (file) => hookFtsIndex(c, ctx, file);
+    upload.onUploadFinished = (file) => hookAfterUpload(c, ctx, file);
     await upload.uploadChunk(sessionId, index, body, contentLength);
     return ok(c);
   } catch (e) {
@@ -954,6 +1002,12 @@ function hookFtsIndex(
   c.executionCtx.waitUntil(
     search.indexFile(file).catch((e) => console.error('FTS index after upload failed', e)),
   );
+}
+
+/** 上传收尾的附加工作：全文索引 + 媒体元数据抽取（互不阻塞、失败隔离）。 */
+function hookAfterUpload(c: Context<AppBindings>, ctx: AppContext, file: FileRow): void {
+  hookFtsIndex(c, ctx, file);
+  hookMediaMeta(ctx, file);
 }
 
 // ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ import { AppError, CodeFeatureNotEnabled } from '../lib/errors';
 import { FileSystemService } from '../services/fs';
 import { UploadService } from '../services/upload';
 import { SearchService } from '../services/search';
+import { hookMediaMeta } from '../services/media/indexer';
 
 export const callbackRoutes = new Hono<AppBindings>();
 
@@ -41,15 +42,16 @@ async function handleCallback(c: AppRequest) {
   try {
     const service = new FileSystemService(ctx);
     const upload = new UploadService(ctx, service);
-    // 直传收尾后同样送全文索引（waitUntil 不阻塞回调响应）
+    // 直传收尾后送全文索引 + 媒体元数据（waitUntil 不阻塞回调响应）
     const search = new SearchService(ctx);
-    if (search.available) {
-      upload.onUploadFinished = (file) => {
+    upload.onUploadFinished = (file) => {
+      if (search.available) {
         c.executionCtx.waitUntil(
           search.indexFile(file).catch((e) => console.error('FTS index after upload failed', e)),
         );
-      };
-    }
+      }
+      hookMediaMeta(ctx, file);
+    };
     await upload.completeByCallback(c.req.param('sessionID') ?? '', c.req.param('key') ?? '');
     return ok(c);
   } catch (e) {

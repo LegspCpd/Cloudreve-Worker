@@ -22,6 +22,7 @@ import { getSql } from '../db';
 import { safeDecodePath } from '../lib/paths';
 import type { StoragePolicyRow } from '../db/types';
 import { bytesToBase64, base64ToBytes } from '../lib/crypto';
+import { RangeNotSatisfiable } from '../lib/errors';
 import {
   resolveChunkSize,
   type DriverCapabilities,
@@ -748,6 +749,8 @@ export class OneDriveDriver implements StorageDriver {
     const res = await fetch(info.downloadUrl, {
       headers: range ? { Range: range } : undefined,
     });
+    // 越界 Range 必须是真 416，否则 fail() 会回 HTTP 200 业务信封，播放器卡死。
+    if (res.status === 416) throw new RangeNotSatisfiable(info.size);
     if (!res.ok && res.status !== 206) return null;
     return {
       body: res.body as ReadableStream,

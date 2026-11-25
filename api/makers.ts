@@ -104,10 +104,26 @@ export async function onRequest(context: { request: Request; env?: unknown }) {
     req = new Request(raw.url, { method: raw.method, headers: safeHeaders });
   }
 
-  return app.fetch(req, env as unknown as Env, {
-    waitUntil: (p: Promise<unknown>) => p,
+  // EdgeOne Pages 的 onRequest 不提供 ExecutionContext.waitUntil。此前传
+  // `(p) => p` 空实现，导致所有后台任务（全文索引、媒体元数据抽取、缩略图
+  // 边缘缓存回填）全部不执行 —— EO 上媒体信息一直是空的。
+  // 这里改成收集任务并 fire-and-forget：响应不等待它们，尽力让它们在函数
+  // 返回前跑完。EdgeOne 可能在响应后冻结环境，但至少不再「确定不执行」。
+  const background: Promise<unknown>[] = [];
+  const response = await app.fetch(req, env as unknown as Env, {
+    waitUntil: (p: Promise<unknown>) => {
+      background.push(p.catch((e) => console.error('[EO background task]', e)));
+    },
     passThroughOnException: () => undefined,
   } as unknown as ExecutionContext);
+  if (background.length > 0) {
+    // 最多等 3 秒：后台任务不该拖垮前台响应；超时后剩余的由惰性补偿/cron 兜底。
+    await Promise.race([
+      Promise.allSettled(background),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]).catch(() => undefined);
+  }
+  return response;
 }
 
 export default onRequest;

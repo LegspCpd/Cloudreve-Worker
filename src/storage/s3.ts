@@ -22,6 +22,7 @@
  */
 import type { StoragePolicyRow } from '../db/types';
 import { attachmentDisposition } from '../lib/disposition';
+import { RangeNotSatisfiable } from '../lib/errors';
 import {
   resolveChunkSize,
   type DriverCapabilities,
@@ -556,13 +557,17 @@ export class S3CompatibleDriver implements StorageDriver {
     if (range) headers.range = range;
     const res = await this.signedFetch('GET', this.objectUrl(source), { headers, raw: true });
     if (res.status === 404) return null;
+    // Range 越界必须在 !res.ok 之前判：否则抛普通 Error → /content 的 fail()
+    // 变成「HTTP 200 + 业务 JSON」，播放器把 JSON 当媒体数据，拖动后卡死。
+    if (res.status === 416) {
+      await res.body?.cancel().catch(() => {});
+      const cr = res.headers.get('content-range');
+      const total = cr ? Number(cr.split('/')[1]) : Number.NaN;
+      throw new RangeNotSatisfiable(Number.isFinite(total) ? total : 0);
+    }
     if (!res.ok) {
       await res.body?.cancel().catch(() => {});
       throw new Error(`S3 GET failed (${res.status}) for ${source}`);
-    }
-    if (res.status === 416) {
-      await res.body?.cancel().catch(() => {});
-      return null;
     }
 
     let size = Number(res.headers.get('content-length') ?? 0);
