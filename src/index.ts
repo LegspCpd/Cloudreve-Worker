@@ -24,6 +24,7 @@ import type { Env } from './env';
 import { appContext, ctxOf, securityHeaders, type AppBindings, type AppRequest } from './middleware/app';
 import { cachePublicAnon, cachePublicAnonStore } from './middleware/cachePublic';
 import { cacheAuthed } from './middleware/cacheAuthed';
+import { applySiteIcons } from './lib/siteIcons';
 import { fail, ok } from './lib/response';
 import { AppError, CodeNotFound, describeError } from './lib/errors';
 import { ensureSettings, loadSettings, prefetchSettings } from './settings/provider';
@@ -462,7 +463,15 @@ async function serveFrontend(c: Context<AppBindings>): Promise<Response> {
     // run_worker_first 里交给 Worker，这里把 HTML 改成 no-store，
     // 之后每次导航都回源拿当前版本。
     if (res.headers.get('content-type')?.includes('text/html')) {
-      const noStore = new Response(res.body, res);
+      // 官方 index.html 的 favicon / 首屏 logo 是模板占位符，构建期只能填
+      // 默认值。这里按站点设置运行时替换，管理后台改 PWA 图标才能生效。
+      const s = ctxOf(c).settings;
+      const html = applySiteIcons(await res.text(), {
+        small: s.get('pwa_small_icon'),
+        medium: s.get('pwa_medium_icon'),
+        large: s.get('pwa_large_icon'),
+      });
+      const noStore = new Response(html, res);
       noStore.headers.set('Cache-Control', 'no-store');
       return noStore;
     }

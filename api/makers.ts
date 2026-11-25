@@ -26,6 +26,8 @@ import app from '../src/index';
 import INDEX_HTML from '../dist/index.html';
 import type { Env } from '../src/env';
 import { kvFor } from '../src/lib/kvRouter';
+import { applySiteIcons } from '../src/lib/siteIcons';
+import { loadSettings } from '../src/settings/provider';
 import { runCronTasks } from '../src/services/cron';
 
 /** 后端路径前缀：这些请求永远交给 Hono，绝不返回 SPA 壳。 */
@@ -57,7 +59,21 @@ export async function onRequest(context: { request: Request; env?: unknown }) {
     !ASSET_PATTERN.test(url.pathname);
 
   if (isHtmlNav) {
-    return new Response(INDEX_HTML, {
+    // 官方 index.html 的 favicon / 首屏 logo 是模板占位符，构建期填了默认值。
+    // 这里读站点设置运行时替换，管理后台改 PWA 图标才能生效。设置读失败
+    // 就用默认壳，绝不让首页因为一次 DB/KV 抖动挂掉。
+    let html = INDEX_HTML;
+    try {
+      const s = await loadSettings(env as unknown as Env);
+      html = applySiteIcons(INDEX_HTML, {
+        small: s.get('pwa_small_icon'),
+        medium: s.get('pwa_medium_icon'),
+        large: s.get('pwa_large_icon'),
+      });
+    } catch {
+      // 保留默认 HTML
+    }
+    return new Response(html, {
       headers: {
         'content-type': 'text/html; charset=utf-8',
         'cache-control': 'no-cache',
