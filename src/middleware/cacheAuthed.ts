@@ -84,7 +84,15 @@ export function cacheAuthed(): MiddlewareHandler<Bindings> {
       const header = c.req.header('Authorization') ?? null;
       if (header) {
         const hash = await authHash(header);
-        const epoch = await getAuthEpoch(c.env, hash);
+        // epoch 按 user id 取（与写失效、上传收尾 bump 同一把键）。命中检查里
+        // 已经要求解析出 user，这里若 user 为空就当 miss，绝不用 '0' 去回缓存。
+        const ctxUser = (c.get('ctx' as never) as { user?: { id?: number } } | undefined)?.user;
+        const uid = ctxUser?.id;
+        if (uid === undefined) {
+          await next();
+          return;
+        }
+        const epoch = await getAuthEpoch(c.env, String(uid));
         const hit = await edgeAuthCacheMatch(c, hash, epoch);
         // 命中前必须确认本次请求真的解析出了用户。封禁/删号/access token 过期时
         // appContext 会把 user 留空，但 Authorization 串没变、缓存键也没变 ——
@@ -125,13 +133,16 @@ export function cacheAuthed(): MiddlewareHandler<Bindings> {
       return;
     }
 
-    // 2) 写操作失效：任何成功的非 GET 登录态请求 bump epoch。
+    // 2) 写操作失效：任何成功的非 GET 登录态请求 bump 该用户的 epoch。
+    // S3/OSS 等直传完成回调是 GET 且没有 Authorization，走不到这里 —— 这类
+    // 上传由 UploadService.finishUpload 收尾时主动 bump（按 uid，同一把键）。
     if (rule === null && c.req.method !== 'GET' && res.status === 200) {
       const header = c.req.header('Authorization');
-      if (header) {
+      const uid = (c.get('ctx' as never) as { user?: { id?: number } } | undefined)?.user?.id;
+      if (header && uid !== undefined) {
         const code = await envelopeCode(c);
         if (code === 0) {
-          await bumpAuthEpoch(c.env, await authHash(header));
+          await bumpAuthEpoch(c.env, String(uid));
         }
       }
     }

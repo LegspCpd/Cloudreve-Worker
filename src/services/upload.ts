@@ -53,6 +53,7 @@ import { extOf } from './savepath';
 import { isRelayEnabled, type UploadedPart, type UploadSession } from '../storage/types';
 import { publish } from './events';
 import { kvFor } from '../lib/kvRouter';
+import { bumpAuthEpoch } from '../lib/edgeCacheAuth';
 
 const SESSION_PREFIX = 'upload_session:';
 /** 原版 uploadSentinelCheckMargin = 5 分钟 */
@@ -566,6 +567,13 @@ export class UploadService {
       }
     }
 
+    // 让登录态列目录缓存立刻失效。前端上传完隔 1 秒重拉 GET /file，若缓存
+    // 还活着就会拿到旧列表，表现为「上传完要手动刷新整页才看得到新文件」。
+    // 必须在这里 bump 而不是只靠 cacheAuthed 的写失效中间件：S3/OSS 等直传的
+    // 完成回调是 GET 且没有用户 Authorization，那条中间件够不着。按 uid 而非
+    // token hash，是因为回调里没有 Authorization 可算 hash。
+    await bumpAuthEpoch(this.ctx.env, String(session.uid));
+
     // 通知同 isolate 内的 SSE 订阅者（前端文件列表实时刷新）
     if (target) {
       try {
@@ -775,6 +783,10 @@ export class UploadService {
 
     // 新旧实体同在一张 file_entities 里，按版本保留策略裁剪（与上传提交同一条路径）
     await this.capVersionEntities(file.id, file.owner_id, file.name);
+
+    // 覆盖写改了文件大小/元数据，登录态列目录缓存同样要失效（DAV PUT 是写请求，
+    // cacheAuthed 的写失效能覆盖；但编辑保存等路径统一在这里 bump 更可靠）。
+    await bumpAuthEpoch(this.ctx.env, String(file.owner_id));
   }
 
   // -------------------------------------------------------------------------

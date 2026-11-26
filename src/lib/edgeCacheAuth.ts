@@ -64,17 +64,25 @@ function deployKey(env: Env): string {
   return (env.JWT_SECRET ?? '').slice(0, 8) || 'dev';
 }
 
-function epochColoKey(env: Env, hash: string): string {
-  return `epoch:${deployKey(env)}:${hash}`;
+/**
+ * epoch 的键用 user id，不用 token hash。
+ *
+ * 读缓存的键仍按 token hash 隔离（不同 token 不串），但「失效版本号」必须按
+ * 用户：S3/OSS/COS 等直传的完成回调是 GET、且没有用户 Authorization，拿不到
+ * token hash；只有 user id 能在上传收尾里确定地 bump。一个用户换 token 后，
+ * 按 user id 的 epoch 也能让旧 token 的缓存一起失效。
+ */
+function epochColoKey(env: Env, uid: string): string {
+  return `epoch:${deployKey(env)}:u:${uid}`;
 }
 
-export async function getAuthEpoch(env: Env, hash: string): Promise<string> {
-  const memoKey = `${deployKey(env)}:${hash}`;
+export async function getAuthEpoch(env: Env, uid: string): Promise<string> {
+  const memoKey = `${deployKey(env)}:u:${uid}`;
   const now = Date.now();
   const cached = EPOCH_MEMO.get(memoKey);
   if (cached && now - cached.t < EPOCH_MEMO_TTL_MS) return cached.v;
 
-  const coloHit = await coloCacheGetJson<string>(epochColoKey(env, hash), EPOCH_COLO_TTL_S);
+  const coloHit = await coloCacheGetJson<string>(epochColoKey(env, uid), EPOCH_COLO_TTL_S);
   if (coloHit) {
     EPOCH_MEMO.set(memoKey, { v: coloHit, t: now });
     return coloHit;
@@ -84,30 +92,36 @@ export async function getAuthEpoch(env: Env, hash: string): Promise<string> {
   try {
     const kv = kvFor(env, 'session');
     if (kv) {
-      const got = await kv.get(`edge:ep:${hash}`);
+      const got = await kv.get(`edge:ep:u:${uid}`);
       if (got) v = got;
     }
   } catch {
     /* KV 不可用时退化为不失效（靠 TTL 兜底） */
   }
   EPOCH_MEMO.set(memoKey, { v, t: now });
-  void coloCachePutJson(epochColoKey(env, hash), v, EPOCH_COLO_TTL_S);
+  void coloCachePutJson(epochColoKey(env, uid), v, EPOCH_COLO_TTL_S);
   return v;
 }
 
-/** 写操作后调用：bump 该用户的 epoch，使旧缓存下一读即失效（尽力而为）。 */
-export async function bumpAuthEpoch(env: Env, hash: string): Promise<void> {
+/**
+ * 写操作后调用：bump 该用户的 epoch，使旧缓存下一读即失效。
+ *
+ * 先写 KV 再清本地缓存（顺序关键）：反过来时，写 KV 前的一声读会拿旧值
+ * 回填 colo/memo，随后再没人清它 → 旧 epoch 赖满一整个 TTL。
+ *
+ * colo 删除必须 await：上传完成后前端隔 1 秒就重拉列表，若这里 fire-and-forget，
+ * 下一次读可能撞上还没删掉的旧 colo epoch → 命中旧列表 → 表现为「上传完要手动
+ * 刷新才看得到」。这是确定性时序，不能靠 TTL 兜。
+ */
+export async function bumpAuthEpoch(env: Env, uid: string): Promise<void> {
   try {
     const kv = kvFor(env, 'session');
-    if (kv) await kv.put(`edge:ep:${hash}`, String(Date.now()), { expirationTtl: 3600 });
+    if (kv) await kv.put(`edge:ep:u:${uid}`, String(Date.now()), { expirationTtl: 3600 });
   } catch {
     /* 失效是尽力而为，失败不影响正确性（TTL 兜底） */
   }
-  // 先写 KV 再清本地缓存（顺序很关键）：反过来时，写 KV 前的一声读会拿旧值
-  // 回填 colo/memo，随后再没人清它 → 旧 epoch 赖满一整个 TTL。清在后面，
-  // 并发读即便回填也是读到新 KV 值；清掉的那份自然是旧的。
-  EPOCH_MEMO.delete(`${deployKey(env)}:${hash}`);
-  void coloCacheDelete(epochColoKey(env, hash));
+  EPOCH_MEMO.delete(`${deployKey(env)}:u:${uid}`);
+  await coloCacheDelete(epochColoKey(env, uid));
 }
 
 function originOf(c: Context): string {
