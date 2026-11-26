@@ -1979,8 +1979,8 @@ API \u5165\u53E3\uFF1A/api/v4/site/ping
         }
       }
     </style>
-    <link rel="preload" as="script" crossorigin href="/assets/index-BTJElJrr.js">
-  <script fetchpriority="high" async type="module" crossorigin src="/assets/index-BTJElJrr.js"></script>
+    <link rel="preload" as="script" crossorigin href="/assets/index-BKGMhnw2.js">
+  <script fetchpriority="high" async type="module" crossorigin src="/assets/index-BKGMhnw2.js"></script>
     <link rel="modulepreload" crossorigin href="/assets/common-5dK6VpSw.js">
     <link rel="modulepreload" crossorigin href="/assets/react-CV3HRGEF.js">
     <link rel="stylesheet" crossorigin href="/assets/react-4-pFdlfx.css" media="print" onload="this.media='all'">
@@ -1988,6 +1988,64 @@ API \u5165\u53E3\uFF1A/api/v4/site/ping
     <link rel="preload" as="font" type="font/woff2" crossorigin href="/assets/roboto-latin-400-normal-mTIRXP6Y.woff2">
     <link rel="preload" as="font" type="font/woff2" crossorigin href="/assets/roboto-latin-500-normal-Dxdx3aXO.woff2">
     <link rel="preload" as="image" href="/static/img/logo192.png">
+    <script>/* __edge_site_icons */
+(function () {
+  var KEY = 'edge:siteIcons';
+  var DEF_SMALL = '/static/img/favicon.ico';
+  var DEF_MEDIUM = '/static/img/logo192.png';
+
+  function esc(s) {
+    return String(s).replace(/["\\\\]/g, '').replace(/[()]/g, function (c) {
+      return c === '(' ? '%28' : '%29';
+    });
+  }
+
+  // \u4E09\u4E2A\u4F4D\u7F6E\uFF1Afavicon link\u3001logo \u7684 preload\u3001\u9996\u5C4F\u906E\u7F69\u7684 CSS \u80CC\u666F\u3002
+  function apply(small, medium) {
+    if (small) {
+      var link = document.querySelector('link[rel~="icon"]');
+      if (link) link.href = small;
+    }
+    if (medium) {
+      var pre = document.querySelector('link[as="image"]');
+      if (pre) pre.href = medium;
+      var styles = document.querySelectorAll('style');
+      for (var i = 0; i < styles.length; i++) {
+        var css = styles[i].textContent || '';
+        if (css.indexOf('app-loader') > -1 && css.indexOf(DEF_MEDIUM) > -1) {
+          styles[i].textContent = css.split(DEF_MEDIUM).join(medium);
+        }
+      }
+      var loader = document.getElementById('app-loader');
+      if (loader) {
+        var logo = loader.querySelector('.logo');
+        if (logo) logo.style.backgroundImage = 'url("' + esc(medium) + '")';
+      }
+    }
+  }
+
+  // \u5148\u7528\u7F13\u5B58\u540C\u6B65\u5237\u4E00\u6B21\uFF0C\u907F\u514D\u9996\u5C4F\u95EA\u9ED8\u8BA4\u56FE\u6807\u3002
+  try {
+    var c = JSON.parse(sessionStorage.getItem(KEY) || 'null');
+    if (c && c.small && c.medium) apply(c.small, c.medium);
+  } catch (e) {}
+
+  // \u518D\u62C9 manifest \u6821\u6B63\uFF08\u540E\u53F0\u6539\u4E86\u56FE\u6807\u3001\u6216\u9996\u6B21\u8BBF\u95EE\uFF09\u3002
+  if (!window.fetch) return;
+  fetch('/manifest.json', { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (m) {
+      var icons = (m && m.icons) || [];
+      var small = icons[0] && icons[0].src;
+      var medium = icons[1] && icons[1].src;
+      if (!small || !medium) return;
+      // \u5168\u662F\u9ED8\u8BA4\u503C\u5C31\u4E0D\u7528\u52A8\uFF0C\u7701\u4E00\u6B21 DOM \u5199\u5165
+      if (small === DEF_SMALL && medium === DEF_MEDIUM) return;
+      apply(small, medium);
+      try { sessionStorage.setItem(KEY, JSON.stringify({ small: small, medium: medium })); } catch (e) {}
+    })
+    .catch(function () {});
+})();</script>
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
