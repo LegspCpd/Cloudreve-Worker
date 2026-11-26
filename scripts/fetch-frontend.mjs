@@ -251,6 +251,22 @@ function patchIndexHtml({ platformExtras = true } = {}) {
     finalHtml = finalHtml.replace('</head>', `  ${logoTag}\n  </head>`);
   }
 
+  // 站点图标运行时同步：服务端 applySiteIcons 只覆盖走 Worker 的路由（CF 的 /、
+  // EO 的函数路由）。CF 的 /home 等前端路由、EO 的 / 都由静态层直接吐 index.html，
+  // 替换代码没跑，标签页/加载页一直是默认图标。这段脚本读 /manifest.json（两个
+  // 平台都走 Worker、返回后台设置里的 pwa_small_icon / pwa_medium_icon）自己替换，
+  // 全是官方原版那两个变量，不引入新东西。sessionStorage 缓存上次结果先同步替换，
+  // 避免每次导航都先闪一下默认图标。三个 variant 都注入，CF/EO 行为完全一致。
+  const iconsTag = `<script>${SITE_ICONS_SYNC_SCRIPT}</script>`;
+  if (/<script>\s*\/\* __edge_site_icons \*\/[\s\S]*?<\/script>/.test(finalHtml)) {
+    finalHtml = finalHtml.replace(
+      /<script>\s*\/\* __edge_site_icons \*\/[\s\S]*?<\/script>/,
+      iconsTag,
+    );
+  } else {
+    finalHtml = finalHtml.replace('</head>', `  ${iconsTag}\n  </head>`);
+  }
+
   // 白屏自愈只在 cloudflare 版本注入：这是治 CF Assets 的
   // `not_found_handling = "single-page-application"` 把缺失 chunk 回成 200 HTML
   // 的坑，EdgeOne/ESA 没有这个行为，注进去只会多一次无意义的 6s 定时检查。
@@ -332,6 +348,74 @@ const SELF_HEAL_SCRIPT = `/* __edge_self_heal */
       setTimeout(function () { location.reload(); }, 800);
     }).catch(function () {});
   }, 6000);
+})();`;
+
+/**
+ * 站点图标运行时同步。读 /manifest.json 的前两个 icon（官方 pwa_small_icon /
+ * pwa_medium_icon），替换标签页 favicon 和首屏遮罩 logo。
+ *
+ * 为什么需要：原版 Go 在 middleware/frontend.go 每次请求 HTML 时替换模板占位符，
+ * 我们是静态前端，服务端只在走 Worker 的路由上替换了；静态层直出的页面
+ * （CF /home 等前端路由、EO 的全部页面）拿到的是构建期默认图标。这段脚本让所有
+ * 路由、所有平台渲染一致。ES5、零依赖，跑在入口 module 之前。
+ */
+const SITE_ICONS_SYNC_SCRIPT = `/* __edge_site_icons */
+(function () {
+  var KEY = 'edge:siteIcons';
+  var DEF_SMALL = '/static/img/favicon.ico';
+  var DEF_MEDIUM = '/static/img/logo192.png';
+
+  function esc(s) {
+    return String(s).replace(/["\\\\]/g, '').replace(/[()]/g, function (c) {
+      return c === '(' ? '%28' : '%29';
+    });
+  }
+
+  // 三个位置：favicon link、logo 的 preload、首屏遮罩的 CSS 背景。
+  function apply(small, medium) {
+    if (small) {
+      var link = document.querySelector('link[rel~="icon"]');
+      if (link) link.href = small;
+    }
+    if (medium) {
+      var pre = document.querySelector('link[as="image"]');
+      if (pre) pre.href = medium;
+      var styles = document.querySelectorAll('style');
+      for (var i = 0; i < styles.length; i++) {
+        var css = styles[i].textContent || '';
+        if (css.indexOf('app-loader') > -1 && css.indexOf(DEF_MEDIUM) > -1) {
+          styles[i].textContent = css.split(DEF_MEDIUM).join(medium);
+        }
+      }
+      var loader = document.getElementById('app-loader');
+      if (loader) {
+        var logo = loader.querySelector('.logo');
+        if (logo) logo.style.backgroundImage = 'url("' + esc(medium) + '")';
+      }
+    }
+  }
+
+  // 先用缓存同步刷一次，避免首屏闪默认图标。
+  try {
+    var c = JSON.parse(sessionStorage.getItem(KEY) || 'null');
+    if (c && c.small && c.medium) apply(c.small, c.medium);
+  } catch (e) {}
+
+  // 再拉 manifest 校正（后台改了图标、或首次访问）。
+  if (!window.fetch) return;
+  fetch('/manifest.json', { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (m) {
+      var icons = (m && m.icons) || [];
+      var small = icons[0] && icons[0].src;
+      var medium = icons[1] && icons[1].src;
+      if (!small || !medium) return;
+      // 全是默认值就不用动，省一次 DOM 写入
+      if (small === DEF_SMALL && medium === DEF_MEDIUM) return;
+      apply(small, medium);
+      try { sessionStorage.setItem(KEY, JSON.stringify({ small: small, medium: medium })); } catch (e) {}
+    })
+    .catch(function () {});
 })();`;
 
 /** 在构建产物里找出 Roboto latin 的 400/500 字重文件（哈希名，必须运行时找）。 */
