@@ -173,6 +173,21 @@ export class URI {
   }
 }
 
+/**
+ * 把外部可控的路径段拼到 base 下，并断言归一化后仍在 base 内。
+ *
+ * 归档条目名等外部输入先过 safeEntryPath 拒绝 `..`/绝对路径；这是第二道：
+ * 即便将来某个调用点漏了过滤，normalizePath 的 `..` pop 也不会把文件写到
+ * 兄弟目录。对应上游 remoteDownloadDestination 的 EqualOrIsDescendantOf。
+ */
+export function joinUnder(base: URI, segments: string[]): URI | null {
+  if (!segments.length) return null;
+  const target = base.join(...segments);
+  const root = base.path.endsWith('/') ? base.path : `${base.path}/`;
+  if (!target.path.startsWith(root)) return null;
+  return target;
+}
+
 /** 补前导斜杠并规整，同时保留根路径为 `/`。 */
 function normalizePath(raw: string): string {
   let p = raw || '/';
@@ -231,6 +246,7 @@ export const MAX_FILE_NAME_LENGTH = 255;
 
 export function validateName(name: string): string | null {
   if (!name) return 'File name cannot be empty';
+  if (name.includes('\0')) return 'File name cannot contain NUL';
   if (name.length > MAX_FILE_NAME_LENGTH) {
     return `File name is too long, maximum length is ${MAX_FILE_NAME_LENGTH}`;
   }

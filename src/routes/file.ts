@@ -69,6 +69,8 @@ import {
   RangeNotSatisfiable,
 } from '../lib/errors';
 import { attachmentDisposition, safeContentType } from '../lib/disposition';
+import { checkEmojiPatch } from '../lib/emojiPresets';
+import { acquireLock, readLock, releaseLock } from '../lib/atomicLock';
 import { throttleStream } from '../lib/throttle';
 import { sseClientId } from '../lib/sse';
 
@@ -750,6 +752,16 @@ fileRoutes.patch('/metadata', async (c) => {
         // sys: 是内部保留键（restore_uri / upload_session_id 等），客户端禁写
         if (typeof patch.key === 'string' && patch.key.startsWith('sys:')) {
           return fail(c, Err.param('Reserved metadata keys cannot be modified'));
+        }
+        // 上游 customize:emoji 校验器：图标必须是站点预设里的一个。
+        // edge 原来完全没有这道校验，任意字符串都能写进元数据。
+        if (patch.key === 'customize:emoji') {
+          const err = checkEmojiPatch(
+            ctx.settings.get('emojis', '{}'),
+            patch.value,
+            Boolean(patch.remove),
+          );
+          if (err) return fail(c, Err.param(err));
         }
         if (patch.remove) {
           await ctx.metadata.remove(file.id, patch.key);
@@ -1653,32 +1665,37 @@ fileRoutes.post('/wopi/:id', async (c) => {
   const lockKey = `wopi_lock:${file.id}`;
   const version = wopiVersionHeader(ctx, file);
 
-  const locked = await kvFor(ctx.env, 'upload').get(lockKey);
+  // 原子 CAS：原来 kv.get → 判断 → kv.put/delete 是 check-then-set，两个并发
+  // LOCK 都能读到「无锁」再各自写入 → 两把锁同时生效。改走 DB 条件写，
+  // 由行锁串行化；失败时重读持有者填 X-WOPI-Lock 头。
+  const conflict = (holder: string | null) =>
+    new Response(null, {
+      status: 409,
+      headers: {
+        ...(holder ? { 'X-WOPI-Lock': holder } : {}),
+        'X-WOPI-LockFailureReason': 'Locked by another session',
+      },
+    });
+
   switch (override) {
-    case 'GET_LOCK':
+    case 'GET_LOCK': {
+      const locked = await readLock(ctx.sql, lockKey);
       return new Response(null, {
         status: 200,
         headers: { ...(locked ? { 'X-WOPI-Lock': locked } : {}), ...version },
       });
+    }
     case 'LOCK':
     case 'REFRESH_LOCK': {
-      if (locked && locked !== lockToken) {
-        return new Response(null, {
-          status: 409,
-          headers: { 'X-WOPI-Lock': locked, 'X-WOPI-LockFailureReason': 'Locked by another session' },
-        });
+      if (!(await acquireLock(ctx.sql, lockKey, lockToken))) {
+        return conflict(await readLock(ctx.sql, lockKey));
       }
-      await kvFor(ctx.env, 'upload').put(lockKey, lockToken, { expirationTtl: 1800 });
       return new Response(null, { status: 200, headers: version });
     }
     case 'UNLOCK': {
-      if (locked && locked !== lockToken) {
-        return new Response(null, {
-          status: 409,
-          headers: { 'X-WOPI-Lock': locked, 'X-WOPI-LockFailureReason': 'Locked by another session' },
-        });
+      if (!(await releaseLock(ctx.sql, lockKey, lockToken))) {
+        return conflict(await readLock(ctx.sql, lockKey));
       }
-      await kvFor(ctx.env, 'upload').delete(lockKey);
       return new Response(null, { status: 200, headers: version });
     }
     default:

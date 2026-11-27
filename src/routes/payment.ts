@@ -22,6 +22,7 @@ import type { AppBindings } from '../middleware/app';
 import { ctxOf } from '../middleware/app';
 import { fail, ok } from '../lib/response';
 import { Err } from '../lib/errors';
+import { readBodyLimited, readJsonLimited } from '../lib/bodyLimit';
 import { PaymentService, orderPublic } from '../services/payment';
 import type { VasProductType } from '../db/types';
 
@@ -129,18 +130,26 @@ paymentRoutes.post('/redeem', async (c) => {
 // 易支付公开回调（验签保护）
 // ---------------------------------------------------------------------------
 
-/** 从 GET query 或 POST form/JSON 里归并参数。 */
+/**
+ * 从 GET query 或 POST form/JSON 里归并参数。
+ *
+ * 这是公开回调，body 由支付网关（也可能由攻击者）控制，且验签在
+ * handleEpayCallback 里、读正文之后 —— 和上游 c5cd939d 的 OSS 回调同一
+ * 攻击模型：验签失败的请求同样会先把 body 读完。所以先在受限字节上
+ * 解析，64KB 对齐上游 MaxCallbackBodySize，超限在验签前就回 413。
+ */
+const CALLBACK_BODY_LIMIT = 64 * 1024;
+
 async function collectParams(c: import('hono').Context): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(c.req.query())) out[k] = v;
   const ct = c.req.header('Content-Type') ?? '';
   if (ct.includes('application/x-www-form-urlencoded')) {
-    const form = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>);
-    for (const [k, v] of Object.entries(form)) {
-      if (typeof v === 'string') out[k] = v;
-    }
+    const text = await readBodyLimited(c.req.raw, CALLBACK_BODY_LIMIT);
+    const form = new URLSearchParams(text);
+    for (const [k, v] of form) out[k] = v;
   } else if (ct.includes('application/json')) {
-    const json = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const json = await readJsonLimited<Record<string, unknown>>(c.req.raw, CALLBACK_BODY_LIMIT);
     for (const [k, v] of Object.entries(json)) {
       if (typeof v === 'string') out[k] = v;
     }

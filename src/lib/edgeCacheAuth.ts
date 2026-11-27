@@ -116,7 +116,16 @@ export async function getAuthEpoch(env: Env, uid: string): Promise<string> {
 export async function bumpAuthEpoch(env: Env, uid: string): Promise<void> {
   try {
     const kv = kvFor(env, 'session');
-    if (kv) await kv.put(`edge:ep:u:${uid}`, String(Date.now()), { expirationTtl: 3600 });
+    // 不能只写 Date.now()：同毫秒的两次 bump 会得到同一个值，若中间夹了
+    // 一次读缓存回填，第二次 bump 就等于没 bump。加随机后缀保证每次都变。
+    // 这里只要「值不同」就够（epoch 进缓存键），不要求单调。
+    if (kv) {
+      await kv.put(
+        `edge:ep:u:${uid}`,
+        `${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`,
+        { expirationTtl: 3600 },
+      );
+    }
   } catch {
     /* 失效是尽力而为，失败不影响正确性（TTL 兜底） */
   }

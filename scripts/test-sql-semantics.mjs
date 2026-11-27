@@ -592,6 +592,39 @@ try {
   check('无文件的同名策略照常清掉', Boolean(clean?.deleted_at));
   const gKept = (await db.query(`SELECT storage_policy_id FROM groups WHERE id = 9001`)).rows[0];
   check('有文件的策略仍保持组绑定', Number(gKept?.storage_policy_id) === 2, String(gKept?.storage_policy_id));
+
+  console.log('\n[16] WOPI 锁的原子 CAS（并发 LOCK 只能有一个成功）');
+  const lockBundle = path.join(outDir, 'atomicLock.mjs');
+  await build({
+    entryPoints: [path.join(ROOT, 'src/lib/atomicLock.ts')],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node20',
+    outfile: lockBundle,
+    logLevel: 'silent',
+  });
+  const { readLock, acquireLock, releaseLock } = await import(`file://${lockBundle}`);
+  const lockSql = makeSql(db);
+  const lockKey = 'wopi_lock:test-file';
+  await lockSql`DELETE FROM key_values WHERE key = ${lockKey}`;
+  check('初始无锁', (await readLock(lockSql, lockKey)) === null);
+  check('第一个 LOCK 成功', await acquireLock(lockSql, lockKey, 'token-A'));
+  check('并发的第二个 LOCK 被拒', (await acquireLock(lockSql, lockKey, 'token-B')) === false);
+  check('持有者是 token-A', (await readLock(lockSql, lockKey)) === 'token-A');
+  check('自己的 REFRESH 成功', await acquireLock(lockSql, lockKey, 'token-A'));
+  check('别人的 UNLOCK 被拒', (await releaseLock(lockSql, lockKey, 'token-B')) === false);
+  check('自己的 UNLOCK 成功', await releaseLock(lockSql, lockKey, 'token-A'));
+  check('释放后无锁', (await readLock(lockSql, lockKey)) === null);
+  check('无锁时 UNLOCK 放行（对齐原行为）', await releaseLock(lockSql, lockKey, 'token-C'));
+  // 并发抢锁：两个同时发，仅一个拿到
+  await lockSql`DELETE FROM key_values WHERE key = ${lockKey}`;
+  const results = await Promise.all([
+    acquireLock(lockSql, lockKey, 'X'),
+    acquireLock(lockSql, lockKey, 'Y'),
+  ]);
+  check('两个并发 LOCK 恰好一个成功', results.filter(Boolean).length === 1, JSON.stringify(results));
+  await lockSql`DELETE FROM key_values WHERE key = ${lockKey}`;
 } catch (e) {
   failed += 1;
   console.error('\n  ERROR', e instanceof Error ? e.message : e);

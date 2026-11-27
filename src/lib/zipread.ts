@@ -213,9 +213,13 @@ export async function readEntry(
  * 空段和 `.` 被去掉。非法返回 null。
  */
 export function safeEntryPath(name: string, sanitize = false): string[] | null {
+  // NUL 会被 Postgres text 拒绝（直接 500），在对象键里也是脏数据；
+  // 上游 remoteDownloadDestination 同样显式拒绝 NUL 段。
+  if (name.includes('\0')) return null;
   if (name.startsWith('/') || /^[a-zA-Z]:/.test(name)) return null;
   const segs: string[] = [];
   for (const raw of name.split(/[\\/]/)) {
+    if (raw.includes('\0')) return null;
     if (raw === '' || raw === '.') continue;
     if (raw === '..') return null;
     // 归档里的文件名可以含 `:` `?` 这些云盘禁止的字符。解压时把非法字符

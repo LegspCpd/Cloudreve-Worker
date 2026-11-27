@@ -30,6 +30,12 @@ import { ShareService } from '../services/share';
 import { FileSystemService } from '../services/fs';
 import { AppError, CodeEmailSent, CodeNotFullySuccess, CodeRateLimited, Err } from '../lib/errors';
 import { RATE_LIMITS, clientIp, hitRateLimit } from '../lib/rateLimit';
+import { readBytesLimited, readJsonLimited } from '../lib/bodyLimit';
+
+// 注册/找回密码这些匿名端点的限速排在读 body 之后，必须先在受限字节上解析；
+// 头像单独设上限，避免把 100MB 请求体读进 128MB 的 isolate。
+const USER_BODY_LIMIT = 64 * 1024;
+const AVATAR_BODY_LIMIT = 1024 * 1024;
 import { verifyCaptcha } from './site';
 
 export const userRoutes = new Hono<AppBindings>();
@@ -37,7 +43,7 @@ export const userRoutes = new Hono<AppBindings>();
 /** 注册 */
 userRoutes.post('/', async (c) => {
   const ctx = ctxOf(c);
-  const body = (await c.req.json().catch(() => ({}))) as {
+  const body = (await readJsonLimited(c.req.raw, USER_BODY_LIMIT)) as {
     email?: string;
     password?: string;
     language?: string;
@@ -190,7 +196,7 @@ userRoutes.get('/setting/policies', async (c) => {
 userRoutes.patch('/setting', async (c) => {
   const ctx = ctxOf(c);
   if (!ctx.user) return fail(c, Err.loginRequired());
-  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const body = (await readJsonLimited(c.req.raw, USER_BODY_LIMIT)) as Record<string, unknown>;
   try {
     const res = await new UserService(ctx).updateSettings({
       nick: body.nick as string | undefined,
@@ -252,7 +258,7 @@ userRoutes.put('/authn', async (c) => {
 userRoutes.post('/authn', async (c) => {
   const ctx = ctxOf(c);
   if (!ctx.user) return fail(c, Err.loginRequired());
-  const body = (await c.req.json().catch(() => ({}))) as { response?: string; name?: string };
+  const body = (await readJsonLimited(c.req.raw, USER_BODY_LIMIT)) as { response?: string; name?: string };
   if (!body.response || !body.name) {
     return fail(c, Err.param('response and name are required'));
   }
@@ -286,9 +292,9 @@ userRoutes.put('/setting/avatar', async (c) => {
   if (!contentType.startsWith('image/')) {
     return fail(c, Err.param('Avatar must be an image'));
   }
-  const body = await c.req.arrayBuffer();
+  const body = await readBytesLimited(c.req.raw, AVATAR_BODY_LIMIT);
   try {
-    await new UserService(ctx).uploadAvatar(body, contentType);
+    await new UserService(ctx).uploadAvatar(body.buffer as ArrayBuffer, contentType);
     return ok(c);
   } catch (e) {
     return fail(c, e);
@@ -369,7 +375,7 @@ userRoutes.get('/search', async (c) => {
  */
 userRoutes.post('/reset', async (c) => {
   const ctx = ctxOf(c);
-  const body = (await c.req.json().catch(() => ({}))) as {
+  const body = (await readJsonLimited(c.req.raw, USER_BODY_LIMIT)) as {
     email?: string;
     language?: string;
     captcha?: string;
@@ -403,7 +409,7 @@ userRoutes.post('/reset', async (c) => {
 /** 通过令牌重置密码 */
 userRoutes.patch('/reset/:id', async (c) => {
   const ctx = ctxOf(c);
-  const body = (await c.req.json().catch(() => ({}))) as { password?: string; secret?: string };
+  const body = (await readJsonLimited(c.req.raw, USER_BODY_LIMIT)) as { password?: string; secret?: string };
   if (!body.password || !body.secret) {
     return fail(c, Err.param('password and secret are required'));
   }

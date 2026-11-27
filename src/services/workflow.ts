@@ -49,7 +49,7 @@ import {
   streamByteSource,
   walkTar,
 } from '../lib/tar';
-import { URI } from './uri';
+import { joinUnder, URI, validateName } from './uri';
 import { dispatchRemoteDownload, markDispatched } from './nodeTasks';
 import { assertSafeRemoteUrl, safeFetch, UnsafeRemoteUrlError } from '../lib/ssrf';
 
@@ -479,7 +479,10 @@ export class WorkflowService {
           const partial = segs.slice(0, i);
           const key = partial.join('/');
           if (madeDirs.has(key)) continue;
-          await this.fs.create(dstUri.join(...partial), 'folder');
+          // 二级断言：normalizePath 的 `..` pop 不能把目录建到 dst 之外
+          const target = joinUnder(dstUri, partial);
+          if (!target) continue;
+          await this.fs.create(target, 'folder');
           madeDirs.add(key);
         }
       };
@@ -529,9 +532,14 @@ export class WorkflowService {
               `Entry "${entry.name}" is ${entry.size} bytes, exceeding the ${MAX_EXTRACT_ENTRY_BYTES} byte per-entry limit`,
             );
           }
+          const target = joinUnder(dstUri, segs);
+          if (!target) {
+            skipped += 1;
+            continue;
+          }
           await ensureDir(segs.slice(0, -1));
           const data = entry.size === 0 ? new Uint8Array(0) : await load(entry);
-          await this.writeToUri(dstUri.join(...segs).toString(), entry.size, bytesToStream(data));
+          await this.writeToUri(target.toString(), entry.size, bytesToStream(data));
           extracted += 1;
         }
       };
@@ -574,10 +582,11 @@ export class WorkflowService {
           const segs =
             safeEntryPath(entry.name, true) ??
             safeEntryPath(file.name.replace(/\.gz$/i, ''), true);
-          if (!segs) throw Err.param('Archive entry has an unsafe path');
-          await ensureDir(segs.slice(0, -1));
+          const target = !segs ? null : joinUnder(dstUri, segs);
+          if (!target) throw Err.param('Archive entry has an unsafe path');
+          await ensureDir(segs!.slice(0, -1));
           await this.writeToUri(
-            dstUri.join(...segs).toString(),
+            target.toString(),
             entry.size,
             gunzip(await source.openFull()),
           );
@@ -606,9 +615,14 @@ export class WorkflowService {
                 `Entry "${entry.name}" is ${entry.size} bytes, exceeding the ${MAX_EXTRACT_ENTRY_BYTES} byte per-entry limit`,
               );
             }
+            const target = joinUnder(dstUri, segs);
+            if (!target) {
+              skipped += 1;
+              return; // 没读的数据由 walkTar 补跳
+            }
             await ensureDir(segs.slice(0, -1));
             await this.writeToUri(
-              dstUri.join(...segs).toString(),
+              target.toString(),
               entry.size,
               entry.size === 0 ? bytesToStream(new Uint8Array(0)) : data.stream(),
             );
@@ -769,8 +783,10 @@ export class WorkflowService {
 
       let imported = 0;
       for (const obj of objects) {
-        const segs = safeEntryPath(obj.key.slice(effectivePrefix.length)) ?? [];
-        if (!segs.length) continue;
+        // 存储桶的 object key 是外部数据：sanitize 把云盘禁止的字符换掉，
+        // 再过 validateName，免得脏 key 变成 DB 里的非法文件名。
+        const segs = safeEntryPath(obj.key.slice(effectivePrefix.length), true) ?? [];
+        if (!segs.length || segs.some((s) => validateName(s) !== null)) continue;
         const parentId = segs.length > 1 ? await ensureDir(segs.slice(0, -1)) : base.id;
         // 同一个外部对象导入到多个位置时共用实体并增加引用计数（#3131）。
         // 各建一个独立实体的话，删掉任一处都会让它的引用归零、物理对象被删，

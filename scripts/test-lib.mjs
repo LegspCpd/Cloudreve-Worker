@@ -50,7 +50,9 @@ try {
     outfile: limitBundle,
     logLevel: 'silent',
   });
-  const { readBodyLimited } = await import(`file://${limitBundle}`);
+  const { readBodyLimited, readJsonLimited, readFormLimited, readBytesLimited } = await import(
+    `file://${limitBundle}`
+  );
 
   console.log('\n[1] 纯 ASCII 文件名');
   check(
@@ -186,6 +188,45 @@ try {
     (await readBodyLimited(new Request('https://example.com/'), 1024)) === '',
   );
 
+  console.log('\n[9b] readJsonLimited / readFormLimited / readBytesLimited（匿名端点 body 上限）');
+  const jsonReq = (body) =>
+    new Request('https://example.com/api/v4/session/token', {
+      method: 'POST',
+      body,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  check('正常 JSON 解析', (await readJsonLimited(jsonReq('{"email":"a@b.c","password":"123456"}'), 1024)).email === 'a@b.c');
+  let badJson = null;
+  try {
+    await readJsonLimited(jsonReq('{"a":' + 'x'.repeat(2000)), 1024);
+  } catch (e) {
+    badJson = e;
+  }
+  check('超大 JSON 在解析前被拒（413）', badJson?.code === 413, String(badJson?.code));
+  check(
+    '畸形 JSON 回落空对象，与 c.req.json().catch 一致',
+    JSON.stringify(await readJsonLimited(jsonReq('{bad'), 1024)) === '{}',
+  );
+  const formReq = (body) =>
+    new Request('https://example.com/api/v4/session/oauth/token', {
+      method: 'POST',
+      body,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    });
+  const form = await readFormLimited(formReq('grant_type=authorization_code&code=abc'), 1024);
+  check('urlencoded 表单解析', form.get('code') === 'abc');
+  let bigForm = null;
+  try {
+    await readFormLimited(formReq('code=' + 'x'.repeat(2000)), 1024);
+  } catch (e) {
+    bigForm = e;
+  }
+  check('超大表单被拒', bigForm?.code === 413);
+  check(
+    'readBytesLimited 返回精确字节数',
+    (await readBytesLimited(jsonReq('中文abc'), 1024)).byteLength === new TextEncoder().encode('中文abc').byteLength,
+  );
+
   console.log('\n[10] safeEntryPath sanitize（discussion #2483：归档非法文件名不能整任务失败）');
   const zipBundle = path.join(outDir, 'zipread.mjs');
   await build({
@@ -210,6 +251,53 @@ try {
   check('sanitize 仍拒绝路径穿越', safeEntryPath('../evil.txt', true) === null);
   check('sanitize 仍拒绝绝对路径', safeEntryPath('/etc/passwd', true) === null);
   check('sanitize 保留正常名字', JSON.stringify(safeEntryPath('普通/文件.txt', true)) === '["普通","文件.txt"]');
+  check('NUL 字节被拒（Postgres text 会拒，且是脏数据）', safeEntryPath('file\0.txt', true) === null);
+  check('路径段中含 NUL 也被拒', safeEntryPath('dir/a\0b/c.txt', true) === null);
+  check('中间穿越 a/../../evil 被拒', safeEntryPath('a/../../evil.txt', true) === null);
+  check('Windows 盘符被拒', safeEntryPath('C:/evil.txt', true) === null);
+  check('反斜杠穿越被拒', safeEntryPath('..\\evil.txt', true) === null);
+
+  console.log('\n[10b] joinUnder（归档落盘的二级根内断言）');
+  const uriBundle = path.join(outDir, 'uri.mjs');
+  await build({
+    entryPoints: [path.join(ROOT, 'src/services/uri.ts')],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node20',
+    outfile: uriBundle,
+    logLevel: 'silent',
+  });
+  const { URI, joinUnder, validateName } = await import(`file://${uriBundle}`);
+  const base = URI.parse('cloudreve://my/extract');
+  check('正常段拼在 base 内', joinUnder(base, ['a', 'b.txt'])?.toString() === 'cloudreve://my/extract/a/b.txt');
+  // 即便调用方漏了 safeEntryPath，normalizePath 的 .. pop 也不能逃到兄弟路径
+  check('穿越段被拒（不返回兄弟路径）', joinUnder(base, ['..', 'evil.txt']) === null);
+  check('多段穿越被拒', joinUnder(base, ['a', '..', '..', 'evil.txt']) === null);
+  check('空段返回 null', joinUnder(base, []) === null);
+  check('validateName 拒 NUL', validateName('file\0.txt') !== null);
+  check('validateName 拒 ..', validateName('..') !== null);
+  check('validateName 放行正常名', validateName('文件.txt') === null);
+
+  console.log('\n[10c] emoji 预设白名单（上游 customize:emoji 校验）');
+  const emojiBundle = path.join(outDir, 'emojiPresets.mjs');
+  await build({
+    entryPoints: [path.join(ROOT, 'src/lib/emojiPresets.ts')],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node20',
+    outfile: emojiBundle,
+    logLevel: 'silent',
+  });
+  const { parseEmojiPresets, checkEmojiPatch } = await import(`file://${emojiBundle}`);
+  const emojis = JSON.stringify({ animals: ['🐱', '🐶'], food: ['🍎'] });
+  check('预设展平', parseEmojiPresets(emojis).has('🐱') && parseEmojiPresets(emojis).has('🍎'));
+  check('预设里的 emoji 放行', checkEmojiPatch(emojis, '🐱', false) === null);
+  check('非预设 emoji 被拒', checkEmojiPatch(emojis, '💣', false) === 'unsupported emoji');
+  check('remove 总放行', checkEmojiPatch(emojis, undefined, true) === null);
+  check('损坏的设置不当任意值白名单', checkEmojiPatch('{bad', '💣', false) === 'unsupported emoji');
+  check('每次解析返回新集合（无可变共享状态）', parseEmojiPresets(emojis) !== parseEmojiPresets(emojis));
 
   console.log('\n[11] safeContentType（上传类型不可信，防存储型 XSS）');
   const dispBundle = path.join(outDir, 'disposition2.mjs');

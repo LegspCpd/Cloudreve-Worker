@@ -26,6 +26,8 @@ import app from '../src/index';
 import INDEX_HTML from '../dist/index.html';
 import type { Env } from '../src/env';
 import { kvFor } from '../src/lib/kvRouter';
+import { readBytesLimited } from '../src/lib/bodyLimit';
+import { AppError } from '../src/lib/errors';
 import { applySiteIcons } from '../src/lib/siteIcons';
 import { loadSettings } from '../src/settings/provider';
 import { runCronTasks } from '../src/services/cron';
@@ -86,7 +88,9 @@ export async function onRequest(context: { request: Request; env?: unknown }) {
   // 只有第一次失败。平台传进来的 Request 对象不可靠，这里把 body 完整读进
   // 内存、重建一个标准 Request 再交给 Hono。
   // EdgeOne 单请求 body 上限 6MB（官方文档），全量读入没有 OOM 风险；
-  // CF Worker 不走这个入口，不受影响。
+  // CF Worker 不走这个入口，不受影响。但 6MB 对控制消息仍过大，公开端点
+  // 另有各自的 16KB/64KB 限制；这里按平台硬顶再设一道 6MB 的总闸，
+  // 超限回真 413，别让异常请求一路读到 Hono 才被发现。
   // EdgeOne 不注入 CF-Connecting-IP，客户端可以自己带这个头，每次换一个
   // 值就能重置按 IP 的限速桶。统一剥掉，让 clientIp() 回落到 XFF 最右段。
   const safeHeaders = new Headers(raw.headers);
@@ -94,11 +98,24 @@ export async function onRequest(context: { request: Request; env?: unknown }) {
 
   let req = raw;
   if (raw.method !== 'GET' && raw.method !== 'HEAD') {
-    const buf = await raw.arrayBuffer();
+    // 用受限读取替代裸 arrayBuffer：CL 虚报和 chunked 超限都在流里被拦下。
+    // 这里在 Hono 之前，走不到统一 fail()，超限自己回真 413。
+    let buf: Uint8Array;
+    try {
+      buf = await readBytesLimited(raw, 6 * 1024 * 1024);
+    } catch (e) {
+      if (e instanceof AppError && e.code === 413) {
+        return new Response(JSON.stringify({ code: 413, msg: e.msg }), {
+          status: 413,
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+        });
+      }
+      throw e;
+    }
     req = new Request(raw.url, {
       method: raw.method,
       headers: safeHeaders,
-      body: buf.byteLength > 0 ? buf : undefined,
+      body: buf.byteLength > 0 ? (buf.buffer as ArrayBuffer) : undefined,
     });
   } else {
     req = new Request(raw.url, { method: raw.method, headers: safeHeaders });

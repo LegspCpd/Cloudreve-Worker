@@ -53,7 +53,7 @@ export function okWithCode<T>(c: Context, code: number, data?: T): Response {
  * 既看不懂、又误导（以为是数据库本身坏了）的话。这种情况改用可读文案，
  * 并把原始信息留在 `error` 里便于排查。
  */
-export function fail(c: Context, err: unknown, status: 200 | 404 = 200): Response {
+export function fail(c: Context, err: unknown, status: 200 | 404 | 413 = 200): Response {
   let code = CodeNotSet;
   let msg = '';
   let raw: unknown = err;
@@ -62,6 +62,9 @@ export function fail(c: Context, err: unknown, status: 200 | 404 = 200): Respons
     code = err.code;
     msg = err.msg;
     raw = err.raw;
+    // body 超限上游回真 413（OSS callback 的 ErrCallbackBodyTooLarge）。
+    // 让网关和客户端能按状态码粗粒度拦，不必解析业务信封。
+    if (code === 413) status = 413;
   } else if (err instanceof Error) {
     code = CodeDBError;
     if (isRateLimitError(err) || isUpstream5xxError(err)) {
@@ -110,7 +113,7 @@ function isProduction(c: Context): boolean {
   return mode !== 'development' && mode !== 'dev';
 }
 
-function jsonResponse(c: Context, body: Envelope, status: 200 | 404 = 200): Response {
+function jsonResponse(c: Context, body: Envelope, status: 200 | 404 | 413 = 200): Response {
   // 与原版一致：默认 HTTP 200 + 自定义业务码；仅个别路径（/f/ 404）用非 200
   const res = c.json(body as never, status);
   // 禁止任何层（浏览器、CF 边缘）缓存 API 信封：曾因缓存了修复前返回的

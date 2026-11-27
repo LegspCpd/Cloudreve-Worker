@@ -23,12 +23,21 @@ import { buildQqAuthorizeUrl, handleQqCallback } from '../services/social';
 import { AppError, CodeNotFullySuccess, CodeNotFound, CodeRateLimited, Err } from '../lib/errors';
 import { verifyCaptcha } from './site';
 import { RATE_LIMITS, clearRateLimit, clientIp, hitRateLimit } from '../lib/rateLimit';
+import { readFormLimited, readJsonLimited } from '../lib/bodyLimit';
 
 export const sessionRoutes = new Hono<AppBindings>();
 
+/**
+ * 这些端点匿名可达，且 body 读取排在限速之前 —— 不 lim 住的话，攻击者用
+ * 几十 MB 的 JSON 就能在限速生效前把 isolate 内存吃满（CF 免费档 128MB，
+ * 域名层允许 100MB 请求体）。16KB 对这些控制消息足够。
+ */
+const AUTH_BODY_LIMIT = 16 * 1024;
+const OAUTH_FORM_LIMIT = 16 * 1024;
+
 const handleLogin = async (c: AppRequest) => {
   const ctx = ctxOf(c);
-  const body = (await c.req.json().catch(() => ({}))) as {
+  const body = (await readJsonLimited(c.req.raw, AUTH_BODY_LIMIT)) as {
     email?: string;
     password?: string;
     captcha?: string;
@@ -84,7 +93,7 @@ sessionRoutes.post('/login', handleLogin);
 
 sessionRoutes.post('/token/refresh', async (c) => {
   const ctx = ctxOf(c);
-  const body = (await c.req.json().catch(() => ({}))) as { refresh_token?: string };
+  const body = (await readJsonLimited(c.req.raw, AUTH_BODY_LIMIT)) as { refresh_token?: string };
   if (!body.refresh_token) {
     return fail(c, Err.param('refresh_token is required'));
   }
@@ -98,7 +107,7 @@ sessionRoutes.post('/token/refresh', async (c) => {
 
 sessionRoutes.delete('/token', async (c) => {
   const ctx = ctxOf(c);
-  const body = (await c.req.json().catch(() => ({}))) as { refresh_token?: string };
+  const body = (await readJsonLimited(c.req.raw, AUTH_BODY_LIMIT)) as { refresh_token?: string };
   try {
     if (body.refresh_token) {
       await new UserService(ctx).logout(body.refresh_token);
@@ -175,7 +184,7 @@ async function socialCallbackGate(c: AppRequest): Promise<Response | null> {
 /** OIDC 回调（IdP → 本站）。JSON 形态：前端拿到 code/state 后调这里换 token。 */
 sessionRoutes.post('/oidc/callback', async (c) => {
   const ctx = ctxOf(c);
-  const body = (await c.req.json().catch(() => ({}))) as { code?: string; state?: string };
+  const body = (await readJsonLimited(c.req.raw, AUTH_BODY_LIMIT)) as { code?: string; state?: string };
   if (!body.code || !body.state) {
     return fail(c, Err.param('code and state are required'));
   }
@@ -255,7 +264,7 @@ sessionRoutes.get('/qq/callback', async (c) => {
 /** QQ 回调（前端 → 本站 JSON）：用 code/state 换 token 并完成登录。 */
 sessionRoutes.post('/qq/callback', async (c) => {
   const ctx = ctxOf(c);
-  const body = (await c.req.json().catch(() => ({}))) as { code?: string; state?: string };
+  const body = (await readJsonLimited(c.req.raw, AUTH_BODY_LIMIT)) as { code?: string; state?: string };
   if (!body.code || !body.state) {
     return fail(c, Err.param('code and state are required'));
   }
@@ -281,7 +290,7 @@ sessionRoutes.post('/qq/callback', async (c) => {
  */
 const handleLogin2FA = async (c: AppRequest) => {
   const ctx = ctxOf(c);
-  const body = (await c.req.json().catch(() => ({}))) as { otp?: string; session_id?: string };
+  const body = (await readJsonLimited(c.req.raw, AUTH_BODY_LIMIT)) as { otp?: string; session_id?: string };
   if (!body.otp || !body.session_id) {
     return fail(c, Err.param('otp and session_id are required'));
   }
@@ -318,7 +327,7 @@ sessionRoutes.put('/authn', async (c) => {
 
 sessionRoutes.post('/authn', async (c) => {
   const ctx = ctxOf(c);
-  const body = (await c.req.json().catch(() => ({}))) as { response?: string; session_id?: string };
+  const body = (await readJsonLimited(c.req.raw, AUTH_BODY_LIMIT)) as { response?: string; session_id?: string };
   if (!body.response || !body.session_id) {
     return fail(c, Err.param('response and session_id are required'));
   }
@@ -364,7 +373,7 @@ async function handleConsent(c: AppRequest, deny: boolean): Promise<Response> {
   // consent 等于第三方应用自己给自己授权。PKCE / redirect_uri / scope 校验
   // 挡不住这个 —— 「谁在同意」这一环得单独挡。
   if (ctx.scopes !== undefined) return fail(c, Err.noPermission());
-  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const body = (await readJsonLimited(c.req.raw, AUTH_BODY_LIMIT)) as Record<string, unknown>;
   const service = new OAuthService(ctx, c.env);
   try {
     const res = await service.consent(
@@ -395,7 +404,7 @@ sessionRoutes.post('/oauth/token', async (c) => {
   const ctx = ctxOf(c);
   const service = new OAuthService(ctx, c.env);
   try {
-    const form = await c.req.formData();
+    const form = await readFormLimited(c.req.raw, OAUTH_FORM_LIMIT);
     const get = (k: string): string => String(form.get(k) ?? '');
     const res = await service.exchangeToken({
       client_id: get('client_id'),
