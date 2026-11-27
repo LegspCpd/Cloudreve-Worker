@@ -359,6 +359,11 @@ sessionRoutes.get('/oauth/app/:app_id', async (c) => {
 async function handleConsent(c: AppRequest, deny: boolean): Promise<Response> {
   const ctx = ctxOf(c);
   if (!ctx.user) return fail(c, Err.loginRequired());
+  // 上游 361dd432：consent 只接受一方登录态。OAuth 客户端 token 的 scopes
+  // 非 undefined（middleware/app.ts 只在 JWT 带 client_id 时写入），拿它来
+  // consent 等于第三方应用自己给自己授权。PKCE / redirect_uri / scope 校验
+  // 挡不住这个 —— 「谁在同意」这一环得单独挡。
+  if (ctx.scopes !== undefined) return fail(c, Err.noPermission());
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const service = new OAuthService(ctx, c.env);
   try {

@@ -418,22 +418,14 @@ userRoutes.patch('/reset/:id', async (c) => {
 /**
  * 邮件激活。对应上游 `routers/router.go:399 user.GET("activate/:id")`。
  *
- * 上游在 handler 之前挂了 `SignRequired`，校验的是**路径签名**：
- * 前端 `/session/activate?id=&sign=` 里的 sign，是用后端 API 路径
- * `/api/v4/user/activate/<id>` 算出来的。签名通过才允许改状态——
- * 少了这一步，任何人猜到一个用户 id 就能把别人的账号激活。
- *
- * 这里用路由参数重新拼路径再校验，避免客户端传了百分号编码导致路径不等。
+ * 签名校验在 UserService.activate 里做（上游 0d0a54b1 后签的是邮箱+密码
+ * 摘要而非此路径）。少了这一步，任何人猜到用户 id 就能把别人的账号激活。
  */
 userRoutes.get('/activate/:id', async (c) => {
   const ctx = ctxOf(c);
   const id = c.req.param('id');
   try {
-    const res = await new UserService(ctx).activate(
-      id,
-      c.req.query('sign') ?? '',
-      `/api/v4/user/activate/${id}`,
-    );
+    const res = await new UserService(ctx).activate(id, c.req.query('sign') ?? '', '');
     return ok(c, res);
   } catch (e) {
     return fail(c, e);

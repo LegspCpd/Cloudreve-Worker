@@ -494,6 +494,45 @@ export class UserRepo {
     await this.touchCache(id);
   }
 
+  /**
+   * 条件激活：只有当当前邮箱+密码摘要仍与激活链接签发时一致才生效。
+   * 上游 0d0a54b1 的 `Activate()`（Where StatusInactive/EmailEQ/PasswordEQ）。
+   * 返回 false = 凭证已变（重注册改过密码）或状态已不是 inactive，
+   * 调用方必须按「链接失效」处理，不能无条件放行。
+   */
+  async activateIfCredentialMatches(
+    id: number,
+    email: string,
+    passwordDigest: string,
+  ): Promise<boolean> {
+    const rows = await this.sql`
+      UPDATE users SET status = 'active', updated_at = now()
+      WHERE id = ${id} AND status = 'inactive' AND email = ${email} AND password = ${passwordDigest}
+      RETURNING id
+    `;
+    if (rows.length > 0) await this.touchCache(id);
+    return rows.length > 0;
+  }
+
+  /**
+   * 重注册未激活账号时换密码：条件同样带上旧邮箱+旧密码摘要，
+   * 防止两个并发重注册各自拿到不同密码。返回 false = CAS 失败。
+   */
+  async updateInactivePassword(
+    id: number,
+    email: string,
+    oldDigest: string,
+    newDigest: string,
+  ): Promise<boolean> {
+    const rows = await this.sql`
+      UPDATE users SET password = ${newDigest}, updated_at = now()
+      WHERE id = ${id} AND status = 'inactive' AND email = ${email} AND password = ${oldDigest}
+      RETURNING id
+    `;
+    if (rows.length > 0) await this.touchCache(id);
+    return rows.length > 0;
+  }
+
   async updateEmail(id: number, email: string): Promise<void> {
     await this.sql`
       UPDATE users SET email = ${email}, updated_at = now() WHERE id = ${id}

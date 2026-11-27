@@ -98,8 +98,15 @@ const DAV_OPT_READONLY = 0;
  */
 const DAV_CHALLENGE = 'Basic realm="cloudreve", charset="UTF-8"';
 
-/** 只读账号禁用的方法。与上游 WebDAVAuth:166 的列表一致。 */
-const WRITE_METHODS = new Set(['DELETE', 'PUT', 'MKCOL', 'COPY', 'MOVE', 'LOCK', 'UNLOCK']);
+/**
+ * 只读账号允许的方法（白名单，default-deny）。
+ *
+ * 上游 3216a8cb 把 WebDAVAuth 的黑名单改成白名单：只有 GET/HEAD/POST/
+ * OPTIONS/PROPFIND 算读，其余一律要写权限。黑名单的漏洞是未知/自定义方法
+ * （比如 PROPPATCH、REPORT、或者客户端自造的方法）不在名单里就被当成读放过去。
+ * edge 目前没注册这些 handler，但按默认拒绝更稳，别等加了 handler 才出问题。
+ */
+const READ_METHODS = new Set(['GET', 'HEAD', 'POST', 'OPTIONS', 'PROPFIND']);
 
 davRoutes.use('*', async (c, next) => {
   // 裸 `/dav`（不带尾斜杠）**不做重定向**，直接当根目录处理。
@@ -151,7 +158,7 @@ davRoutes.use('*', async (c, next) => {
   const opts = new BooleanSet(hit.account.options);
   const groupReadonly = (full.group?.settings as { dav_readonly?: boolean } | null)
     ?.dav_readonly === true;
-  if ((opts.enabled(DAV_OPT_READONLY) || groupReadonly) && WRITE_METHODS.has(method)) {
+  if ((opts.enabled(DAV_OPT_READONLY) || groupReadonly) && !READ_METHODS.has(method)) {
     return c.body(null, 403);
   }
 

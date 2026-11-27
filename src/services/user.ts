@@ -16,11 +16,13 @@ import { BooleanSet, GroupPermission } from '../lib/boolset';
 import {
   AppError,
   Code2FACodeErr,
+  CodeConflict,
   CodeEmailExisted,
   CodeFeatureNotEnabled,
   CodeIncorrectPassword,
   CodeInternalSetting,
   CodeInvalidPassword,
+  CodeInvalidSign,
   CodeNotFound,
   CodeNotFullySuccess,
   CodeNotSet,
@@ -104,6 +106,21 @@ export const UserResetPrefix = 'user_reset_';
 
 /** 激活链接有效期 24 小时（上游 `register.go:94`）。 */
 const ACTIVATION_TTL_SECONDS = 86400;
+
+/**
+ * 激活链接签名正文（上游 0d0a54b1 activationSignContent）。
+ *
+ * 必须绑定邮箱和密码摘要：摘要是「这次注册的版本号」，且永远不出服务端。
+ * 只签 API 路径的话，用户重注册（换个密码）后旧链接仍能把账号激活，
+ * 攻击者拿旧邮件就能抢先激活一个自己已不掌握密码的账号。
+ */
+function activationSignContent(user: Pick<UserRow, 'id' | 'email' | 'password'>): string {
+  return `user-activation-v2:${user.id}:${JSON.stringify(user.email)}:${JSON.stringify(user.password)}`;
+}
+
+/** 上游给「链接失效」用的统一文案，前端不解析，但照抄保持一致。 */
+const ACTIVATION_INVALID_MESSAGE =
+  'Activation link is invalid or expired, please register again to request a new link';
 
 /** 重置链接有效期 1 小时（上游 `login.go:100`）。 */
 const RESET_TTL_SECONDS = 3600;
@@ -456,7 +473,22 @@ export class UserService {
     ]);
     if (existing) {
       if (existing.status === 'inactive') {
-        await this.sendActivationEmail(existing);
+        // 上游 0d0a54b1：重注册不只是重发邮件，还要把密码换成这次提交的。
+        // 不换的话攻击者拿旧的激活邮件仍能激活账号，而实际密码是重注册时
+        // 设的那个 —— 密码摘要是激活链接的「注册版本号」，必须跟着变。
+        const newDigest = await digestPassword(password);
+        const changed = await this.ctx.users.updateInactivePassword(
+          existing.id,
+          existing.email,
+          existing.password ?? '',
+          newDigest,
+        );
+        // CAS 失败说明凭证在并发中已变，不能拿旧邮件继续发（会误导用户）。
+        if (!changed) {
+          throw new AppError(CodeConflict, 'Registration has changed, please try again');
+        }
+        const renewed = { ...existing, password: newDigest };
+        await this.sendActivationEmail(renewed);
         return { kind: 'resent', msg: 'User is not activated, activation email has been resent' };
       }
       throw new AppError(CodeEmailExisted, 'This email has already been used');
@@ -618,9 +650,9 @@ export class UserService {
    */
   async buildActivationUrl(user: UserRow): Promise<string> {
     const uid = this.ctx.codec.encodeUserID(user.id);
-    const apiPath = `/api/v4/user/activate/${uid}`;
+    // 不再签 API 路径 —— 签正文绑定 email + 密码摘要，重注册后旧链接自然失效。
     const expires = Math.floor(Date.now() / 1000) + ACTIVATION_TTL_SECONDS;
-    const sign = await this.ctx.signer.sign(apiPath, expires);
+    const sign = await this.ctx.signer.sign(activationSignContent(user), expires);
     return this.frontendLink('/session/activate', { id: uid, sign });
   }
 
@@ -641,28 +673,34 @@ export class UserService {
    * 注意错误码与文案都是照抄的，包括上游那句拼错的 "User not fount" ——
    * 前端不解析它，但「逐字一致」是硬要求（见项目约定）。
    */
-  async activate(userHashId: string, sign: string, path: string): Promise<UserResponse> {
-    // 原版由 `middleware.SignRequired` 在进 handler 之前校验，失败一律包成
-    // CodeCredentialInvalid（`middleware/auth.go:38-41`）。注意 msg 用的是
-    // 底层错误的文案：签名缺失时 `Signer.check('')` 会走到「有效期段为空」
-    // 这一支，得到 "expire timestamp is missing"（上游 `auth.go:22`）。
-    try {
-      await this.ctx.signer.check(path, sign);
-    } catch (e) {
-      throw new AppError(40020, e instanceof Error ? e.message : 'invalid sign');
-    }
-
+  async activate(userHashId: string, sign: string, _path: string): Promise<UserResponse> {
     const uid = this.ctx.codec.decodeUserID(userHashId);
     if (uid === null) throw new AppError(40021, 'User not fount');
 
     const inactiveUser = await this.ctx.users.byId(uid);
     if (!inactiveUser) throw new AppError(40021, 'User not fount');
 
+    // 上游 0d0a54b1：签名正文用**库里的当前凭证**重建再校验，不再用请求路径。
+    // 密码摘要是注册版本号；重注册改过密码后，旧邮件的签名对不上新摘要 -> 失效。
+    try {
+      await this.ctx.signer.check(activationSignContent(inactiveUser), sign);
+    } catch (e) {
+      throw new AppError(CodeInvalidSign, ACTIVATION_INVALID_MESSAGE, e);
+    }
+
     if (inactiveUser.status !== 'inactive') {
       throw new AppError(CodeUserCannotActivate, 'This user cannot be activated');
     }
 
-    await this.ctx.users.updateStatus(uid, 'active');
+    // 条件激活：签名校验与 UPDATE 之间若有并发重注册改了密码，这里会失败，
+    // 不能无条件把账号激活。返回 false 一律当链接失效。
+    const activated = await this.ctx.users.activateIfCredentialMatches(
+      uid,
+      inactiveUser.email,
+      inactiveUser.password ?? '',
+    );
+    if (!activated) throw new AppError(CodeInvalidSign, ACTIVATION_INVALID_MESSAGE);
+
     await this.ctx.files.ensureRoot(uid);
     logAudit(this.ctx, 'user_activated', uid);
     // withGroup：拿到组行就能预热缓存（激活是注册-激活流程的收尾，与

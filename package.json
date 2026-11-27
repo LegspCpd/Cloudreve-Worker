@@ -49,7 +49,8 @@
     "test:archive": "node scripts/test-archive.mjs",
     "test:media": "node scripts/test-media.mjs",
     "test:site-icons": "node scripts/test-site-icons.mjs",
-    "test:auth-epoch": "node scripts/test-auth-epoch.mjs"
+    "test:auth-epoch": "node scripts/test-auth-epoch.mjs",
+    "test:security-parity": "node scripts/test-security-parity.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
